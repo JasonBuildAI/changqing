@@ -24,6 +24,7 @@ from .config import MemoryConfig
 from .persona import NEUTRAL, PersonaProfile
 from .ports import LLM, Embedder, NoUsage, NullEmbedder, NullLLM, UsageSink
 from .runtime import Runtime, configure, reset, runtime, using
+from .tokens import clip_to_tokens, estimate_tokens
 
 __version__ = "0.1.0"
 
@@ -45,5 +46,8 @@ __all__ = [
     "NullLLM",
     "NoUsage",
     "NEUTRAL",
+    # token 折算（预算与裁剪共用同一把尺）
+    "estimate_tokens",
+    "clip_to_tokens",
     "__version__",
 ]
