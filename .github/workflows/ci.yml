@@ -59,7 +59,14 @@ jobs:
       - name: pytest
         # 默认档必须**不联网、不下模型、不启服务**：CI 上任何一次外网抖动
         # 都会长成一条假红，而假红会训练人忽略真红。
-        run: python -m pytest -m "not online" --cov=changqing --cov-report=term-missing
+        #
+        # `--strict-markers`：打错的标记（`@pytest.mark.onlnie`）会当场失败，
+        # 而不是让那条用例**永远不被选中**却一切正常 —— 后者是静默的。
+        # `--cov-fail-under`：本机实测 86%，下限留在 80。没有下限的话，
+        # 「新代码一行没测」不会有任何反馈。
+        run: >
+          python -m pytest -m "not online" --strict-markers
+          --cov=changqing --cov-report=term-missing --cov-fail-under=80
 
   install-from-scratch:
     name: install core only (no extras)
@@ -72,5 +79,16 @@ jobs:
       - name: Install without any optional extra
         run: python -m pip install --upgrade pip && python -m pip install .
       - name: Core must import with zero third-party dependencies
-        run: python -c "import changqing; print(changqing.__version__)"
-
+        # `pip install .`（不带 extras）能装上，只说明依赖声明是对的；
+        # **真正的判据是 import 之后一个第三方模块都没进来** ——
+        # 悄悄多走一条惰性路径，不会有任何东西报错。
+        run: |
+          python - <<'PY'
+          import sys
+          import changqing
+          leaked = sorted(
+              set(sys.modules) & {"fastapi", "jieba", "httpx", "openai", "pydantic", "numpy"}
+          )
+          assert not leaked, f"核心包悄悄拉进了第三方依赖: {leaked}"
+          print("core imported with no third-party modules:", changqing.__version__)
+          PY
