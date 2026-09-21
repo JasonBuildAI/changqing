@@ -34,7 +34,8 @@ dependencies = []
 openai = ["httpx>=0.27"]
 # 可挂载的 FastAPI 路由（`changqing.server`）。
 server = ["fastapi>=0.110", "pydantic>=2.6", "uvicorn>=0.27"]
-# 中文分词。缺失时自动退化成字符 bigram：召回略降，功能不变。
+# 中文分词。缺失时自动退化成**相邻两字的 bigram**：同一句话的召回面会窄一些
+# （实测同一组查询里有一次从回四条变成回一条），但不会报错、也不会一条都搜不到。
 chinese = ["jieba>=0.42"]
 dev = [
   "pytest>=8.0",
@@ -44,6 +45,10 @@ dev = [
   "httpx>=0.27",
   "fastapi>=0.110",
   "pydantic>=2.6",
+  # 开发环境必须装 jieba：golden 语料与合并 / 回引那几组用例的期望值都建立在
+  # jieba 的切法上，不装会有七条用例变红 —— 而那是**环境**红，不是代码红。
+  # 缺 jieba 的退化路径另有 tests/test_tokenize.py 直接覆盖。
+  "jieba>=0.42",
 ]
 all = [
   "httpx>=0.27",

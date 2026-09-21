@@ -23,6 +23,10 @@ python -m pytest        # 测试（默认档：不联网、不下模型、不启
 默认档**不许**引入网络依赖。需要真实 API Key 的用例请打 `@pytest.mark.online`，
 它们不会被默认档选中。
 
+`[dev]` 里带着 `jieba`：golden 语料与几组合并 / 回引用例的期望值都建立在 jieba
+的切法上，不装会有七条用例变红 —— 而那是**环境**红，不是代码红。
+「没装 jieba」的退化路径由 `tests/test_tokenize.py` 直接覆盖。
+
 ## 提交信息
 
 英文，Conventional Commits：
@@ -69,4 +73,3 @@ chore: bump ruff to 0.7
 ## 许可
 
 提交即表示你同意以 Apache-2.0 授权你的贡献。
-

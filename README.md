@@ -91,7 +91,7 @@ for fact in mem.recall("我家猫叫什么？"):
 pip install .                    # 核心：存储 + 抽取 + 检索 + 整理（离线替身可用）
 pip install ".[openai]"          # OpenAI 兼容的嵌入与对话模型
 pip install ".[server]"          # 可挂载的 FastAPI 路由
-pip install ".[chinese]"         # jieba 分词（缺失时退化成字符 bigram，功能不变）
+pip install ".[chinese]"         # jieba 分词（缺失时退化成相邻两字的 bigram：召回面窄一些）
 pip install ".[all]" ".[dev]"    # 全都要 / 开发用
 ```
 
