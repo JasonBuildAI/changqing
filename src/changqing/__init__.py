@@ -21,6 +21,8 @@
 from __future__ import annotations
 
 from .config import MemoryConfig
+from .edit import EDITABLE_FIELDS, EditError
+from .memory import Memory
 from .persona import NEUTRAL, PersonaProfile
 from .ports import LLM, Embedder, NoUsage, NullEmbedder, NullLLM, UsageSink
 from .runtime import Runtime, configure, reset, runtime, using
@@ -30,8 +32,12 @@ __version__ = "0.1.0"
 
 __all__ = [
     # 门面
+    "Memory",
     "MemoryConfig",
     "PersonaProfile",
+    # 手动改一条事实的字段白名单与校验
+    "EDITABLE_FIELDS",
+    "EditError",
     # 装配
     "Runtime",
     "configure",
