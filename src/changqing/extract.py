@@ -352,6 +352,9 @@ def verify(fact: dict, turns_by_id: dict[str, dict], tolerance: float = 0.0) -> 
 
     **只看 `turn_ref` 指的那一轮。** 全库匹配的话，「上下文里碰巧出现过那个词」
     也会被当成命中，而那不是证据。
+
+    `tolerance` 为 0（或不传）时取配置里那份 —— 也就是说 `0.0` 的含义是
+    「用默认」，不是「阈值 0」。想表达「什么都收」得传一个正数。
     """
     tol = tolerance or runtime().config.pending_tolerance
     tid = str(fact.get("turn_ref") or "").strip()
