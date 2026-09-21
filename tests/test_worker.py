@@ -423,3 +423,54 @@ def test_disk_uid_list_is_cached(rt: Runtime, monkeypatch: pytest.MonkeyPatch):
     assert w._disk_uid_list() == [UID], "TTL 内用缓存"
     w._disk_listed_at = 0.0  # 假装 TTL 过期
     assert len(w._disk_uid_list()) == 2, "过期后重新列，新人进来了"
+
+
+# ---------------------------------------------------------------- L0 归档
+def _old_say(uid: str, text: str, days_ago: int) -> None:
+    """往「很多天以前」那天写一轮原话（归档的判据是那一天属于哪个月）。"""
+    append_turn(uid, {"user": text, "assistant": "嗯", "ts": time.time() - days_ago * 86400})
+
+
+def test_overdue_turns_are_archived(rt: Runtime, mem_root):
+    """超期的原话搬进 gzip —— **不是删除**，`read_turns` 透明读回两处。"""
+    _old_say(UID, "很久以前说过的话", 900)
+    say(UID, "今天说的话")
+    before = read_turns(UID)
+
+    out = MemoryWorker()._archive_if_due(UID)
+    assert out["files"] == 1, "搬走了一个月"
+    assert read_turns(UID) == before, "读回来一字不差 —— 归档不该改变任何读取结果"
+    assert list(mem_root.rglob("sessions.archive/*.gz")), "确实落在归档目录里"
+
+
+def test_archiving_happens_at_most_once_a_day(rt: Runtime):
+    """它挂在 `maybe_extract` 最开头，而那是被**按批批量**调用的 ——
+    日常开销必须只是「一次 state 读 + 一次日期比较」。
+    """
+    _old_say(UID, "很久以前说过的话", 900)
+    w = MemoryWorker()
+    assert w._archive_if_due(UID)["files"] == 1
+    assert w._archive_if_due(UID) == {}, "今天第二次是空的（没再扫目录）"
+    assert load_state(UID)["last_archive_scan"] == time.strftime("%Y-%m-%d")
+
+
+def test_archiving_is_skipped_when_retention_is_off(rt: Runtime, mem_root):
+    """一行关掉 = 永不清理：`retain_months <= 0` 连目录都不该扫。"""
+    _old_say(UID, "很久以前说过的话", 900)
+    w = MemoryWorker()
+    with using(Runtime(config=rt.config.evolved(retain_months=0))):
+        assert w._archive_if_due(UID) == {}
+    assert not list(mem_root.rglob("sessions.archive/*.gz"))
+
+
+def test_archiving_runs_even_when_there_is_nothing_to_extract(rt: Runtime):
+    """判据在归档**之后**：一个不再说话的用户也得轮得到归档。
+
+    顺序反了的话，`should_run` 一返回空就整个早退 —— 那段永远停在保留期外的
+    原话不但搬不走，还每次空转都被重扫一遍。
+    """
+    _old_say(UID, "很久以前说过的话", 900)
+    update_state(UID, user_rounds=1, extracted_rounds=1)  # 早就抽完了，没有新东西
+    out = MemoryWorker().maybe_extract(UID)
+    assert out["skipped"] is True, "确实没有新原话要抽"
+    assert out["archive"]["files"] == 1, "但归档照样跑了"

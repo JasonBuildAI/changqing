@@ -50,6 +50,7 @@ from .store import (
     append_op,
     append_summary,
     append_topic,
+    archive_old_turns,
     load_state,
     materialize,
     mutate_state,
@@ -350,13 +351,57 @@ class MemoryWorker:
             return "turns"
         return ""
 
+    # ---------------------------------------------------------- L0 归档
+    def _archive_if_due(self, uid: str) -> dict[str, Any]:
+        """超期的 L0 原话搬进 gzip 包（`archive_old_turns`）—— **每天最多一次**。
+
+        为什么挂在整理 worker 上：它已经是一个「按 uid 定期转一圈」的后台线程，
+        归档再起一条线程/定时器只是多一个要运维的东西，而这件事**慢一点完全
+        没关系**（晚一天搬走不影响任何读取）。
+
+        **为什么在 `maybe_extract` 的最开头**：归档与「有没有新原话要抽」是两件事
+        —— 用户今天没说话、或者早就抽完了（`should_run` 返回空），超期的月份照样
+        得搬走。放在判据后面的话，一个不再说话的用户永远等不到归档。
+
+        **开销纪律**：`maybe_extract` 会被 `_sweep_idle` / `_sweep_disk` **按批批量**
+        调用，所以日常开销必须只是「一次 state 读 + 一次日期比较」；`state.json`
+        的 `last_archive_scan` 挡第二次，只在**今天第一次**时才真去扫目录、写 state。
+
+        `retain_months <= 0` 直接返回（一行关掉 = 永不清理）。归档失败绝不影响
+        抽取：异常在这里吞掉，但**如实放进返回值**（`maybe_extract` 再把它挂到
+        自己的返回体上），不静默。
+        """
+        cfg = _cfg()
+        if int(cfg.retain_months or 0) <= 0:
+            return {}  # 一行关掉 = 永不清理
+        today = time.strftime("%Y-%m-%d")
+        if str(load_state(uid).get("last_archive_scan") or "") == today:
+            return {}  # 今天已经扫过：就这一次 state 读
+        try:
+            out = archive_old_turns(uid, months=cfg.retain_months)
+        except Exception as e:  # noqa: BLE001  归档坏了也得能整理
+            out = {"files": 0, "bytes": 0, "months": [], "error": str(e)}
+        # 扫过就记下来，**哪怕这次没搬、哪怕报了错**：这是一条「节流」记录，不是
+        # 「成功」记录。不记的话，一个坏文件会让这个 uid 每次被扫到都重撞一遍
+        # （每 30 秒一次），而重试的收益是零。
+        # state 写不动不影响归档结果（下一次顶多再扫一遍）
+        with contextlib.suppress(Exception):
+            update_state(uid, last_archive_scan=today)
+        return out
+
     # ---------------------------------------------------------- 跑一次
     def maybe_extract(self, uid: str, *, force: bool = False, call: Any = None) -> dict[str, Any]:
+        arch = self._archive_if_due(uid)
         reason = self.should_run(uid, force=force)
         if not reason:
-            return {"ok": True, "skipped": True}
+            out: dict[str, Any] = {"ok": True, "skipped": True}
+            if arch:
+                out["archive"] = arch
+            return out
         out = self.extract_uid(uid, call=call)
         out["reason"] = reason
+        if arch:
+            out["archive"] = arch
         self._last[uid] = out
         self._last_at[uid] = time.time()
         return out
