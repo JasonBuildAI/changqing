@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import time
 import gzip
 import threading
@@ -22,7 +23,8 @@ from pathlib import Path
 from typing import Any
 
 from ..runtime import runtime
-from .paths import _load_state, _lock, _save_state, day_path, sessions_dir
+from .paths import (_load_state, _lock, _save_state, day_path, sessions_dir,
+                    user_dir, watermark)
 
 _TURN_RE = re.compile(r"^- (T-\d{6,}) (\d{2}:\d{2}:\d{2}) (user|assistant) (.*)$")
 
@@ -414,3 +416,93 @@ def archive_stats(uid: str) -> dict[str, Any]:
             except OSError:
                 pass
     return {"files": files, "bytes": size}
+
+
+def stats(uid: str) -> dict[str, Any]:
+    """给自检与面板用的小结。
+
+    **`days` / `bytes` 只算 `sessions/`（还没归档的那部分），`turns` 是两处之和**
+    （它走 `read_turns`）—— 这对看起来会打架：全归档之后 `days == []` 而
+    `turns > 0`。所以这里把归档那一侧**显式报出来**（`archived_days` /
+    `archived_bytes`），让「少了的去哪儿了」在同一份返回值里看得见。
+    """
+    d = sessions_dir(uid)
+    days = sorted(p.stem for p in d.glob("*.md")) if d.exists() else []
+    turns = read_turns(uid)
+    size = 0
+    for p in d.glob("*.md"):
+        try:
+            size += p.stat().st_size
+        except OSError:
+            pass
+    arch = _archive_dir(uid)
+    arch_days: list[str] = []
+    arch_size = 0
+    if arch.exists():
+        for p in arch.glob("*" + _GZ_SUFFIX):
+            arch_days.append(p.name[:-len(_GZ_SUFFIX)])
+            try:
+                arch_size += p.stat().st_size
+            except OSError:
+                pass
+    return {"uid": uid, "dir": str(user_dir(uid)), "days": days,
+            "turns": len(turns), "bytes": size,
+            "archived_days": sorted(arch_days), "archived_bytes": arch_size,
+            "watermark": watermark(uid)}
+
+
+# ---------------------------------------------------------------- 重置
+def reset_memory(uid: str, mode: str | None = None) -> dict[str, Any]:
+    """整库重置，返回**实际做了什么**：`{"mode", "leftover"}`。
+
+    `purge`（默认）= 真删：用户在界面上的预期就是「删了」，而这是用户主动发起的
+    整库操作（区别于系统内部的「事实失效不删」）。
+    `archive` = 改名留档，可恢复。两种都可以，但**界面文案必须与之一致**。
+
+    **为什么返回的不是一个模式字符串**：只要返回字符串，调用方就只能说「成功」。
+    而这条路径上「删不掉」是常态而不是异常 —— Windows 上只要有一个打开的句柄
+    （前台检索、后台整理随时可能正在读 `index.sqlite`），`shutil.rmtree` 与
+    `Path.rename` **都会**失败。旧实现把失败吞进 `ignore_errors=True`：
+    日志、原话、状态都删了，而库里的事实**原样留着** —— 她照样记得、
+    接口却回成功；而且不可再生的那份已经没了，`rebuild()` 也救不回来。所以：
+
+      1. **先把物化层清空**（`index.wipe`）：检索、面板、巩固读的都是那张库，
+         空表 = 她一条都不记得，这一步与「文件能不能删掉」无关；
+      2. 再删文件（日志 / 原话 / 状态这些不可再生的）；
+      3. **如实报出没删掉的**（`leftover`），让调用方决定怎么告诉用户。
+    """
+    mode = (mode or runtime().config.reset_mode or "purge").lower()
+    d = user_dir(uid)
+    if not d.exists():
+        return {"mode": mode, "leftover": []}
+
+    if mode != "archive":
+        # 1) 先让她真的不记得。
+        # **这一步必须在下面那把 `_lock(uid)` 之外**：`index.wipe` 自己也要拿同一把
+        # 锁，而 `threading.Lock` 不可重入 —— 套在里面会当场死锁。它自己拿锁，
+        # 所以单独调用也是安全的。
+        from .index import wipe        # 惰性：store 内部按包分层，别在导入期成环
+        wipe(uid)
+
+    with _lock(uid):
+        if mode == "archive":
+            stamp = time.strftime("%Y%m%d%H%M%S")
+            target = d.with_name(f"{d.name}.archived-{stamp}")
+            n = 1
+            while target.exists():      # 同一秒里连点两次也不能互相覆盖
+                target = d.with_name(f"{d.name}.archived-{stamp}-{n}")
+                n += 1
+            try:
+                d.rename(target)
+            except OSError:
+                # archive **没有**「删掉」这层语义：改名失败就是没归档，必须抛。
+                # 悄悄返回成功会让调用方以为留档成功了。
+                raise
+            return {"mode": mode, "leftover": []}
+
+        try:
+            shutil.rmtree(d, ignore_errors=True)   # 2) 再删文件，尽力而为
+        except OSError:
+            pass
+        leftover = sorted(p.name for p in d.iterdir()) if d.exists() else []
+        return {"mode": mode, "leftover": leftover}
