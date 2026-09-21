@@ -1,0 +1,24 @@
+# 只写「不这样就会出事」的那几条，不重述 PEP 8。
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.py]
+indent_style = space
+indent_size = 4
+
+[*.{md,yml,yaml,toml}]
+indent_style = space
+indent_size = 2
+
+[*.md]
+# 中文文档里的行尾空格常常是有意的（Markdown 硬换行），别让编辑器吃掉它。
+trim_trailing_whitespace = false
+
+[Makefile]
+indent_style = tab
+

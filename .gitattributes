@@ -1,0 +1,11 @@
+# 只用 LF 存文本：这是一个全新的公开仓库，不受任何宿主的历史行尾影响。
+# 落单的 \r 会让 git 把整份文件判成二进制、跳过归一化，diff 会长成「整份重写」。
+* text=auto eol=lf
+
+# 二进制资产不参与文本归一化
+*.png  binary
+*.jpg  binary
+*.gif  binary
+*.ico  binary
+*.woff binary
+*.woff2 binary
