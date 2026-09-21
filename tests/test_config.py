@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 
 from changqing import MemoryConfig
+from changqing.config import ENV_MAP
 
 
 def test_retain_months_zero_means_never_clean():
@@ -44,3 +46,48 @@ def test_evolved_returns_a_new_object():
     assert other is not base
     assert other.hot_tokens == 500
     assert base.hot_tokens == 300, "原配置不动"
+
+
+# ---------------------------------------------------------------- 环境变量
+def test_env_map_covers_every_field_and_nothing_else():
+    """`ENV_MAP` 与字段必须一一对应。
+
+    它是 `docs/configuration.md` 那张表的真源。漏一个字段的症状是「这个开关读不到，
+    而它看起来完全正常」—— 部署脚本里写着 `CHANGQING_XXX`，库里没有一处认领它；
+    多一个名字则是文档里多了一个不存在的开关。**两个方向都不报错**，所以钉住。
+    """
+    fields = {f.name for f in dataclasses.fields(MemoryConfig)}
+    assert set(ENV_MAP) == fields, f"ENV_MAP 与字段不一致：{sorted(set(ENV_MAP) ^ fields)}"
+
+
+def test_env_map_names_are_unique():
+    """两个字段不能共用一个环境变量名：后一个会永远读不到自己的值。"""
+    names = list(ENV_MAP.values())
+    assert len(names) == len(set(names)), "有重复的环境变量名"
+
+
+def test_from_env_reads_the_prefixed_variables(monkeypatch):
+    monkeypatch.setenv("CHANGQING_HOT_TOKENS", "777")
+    assert MemoryConfig.from_env().hot_tokens == 777
+
+
+def test_blank_environment_value_means_unset(monkeypatch):
+    """空串当没设置：`CHANGQING_DIR=` 写下来表示「用默认」。
+
+    不当没设置的话，`os.environ` 给的是空串而不是默认值，于是根目录变成当前目录
+    —— 在用户眼里就是「我什么都没改，记忆库突然搬家了」。
+    """
+    monkeypatch.setenv("CHANGQING_DIR", "")
+    assert MemoryConfig.from_env().root == MemoryConfig().root
+
+
+def test_a_broken_number_falls_back_to_the_default(monkeypatch):
+    """写错一行不该让整个库起不来。"""
+    monkeypatch.setenv("CHANGQING_HOT_TOKENS", "不是数字")
+    assert MemoryConfig.from_env().hot_tokens == 300
+
+
+def test_from_env_can_take_another_prefix(monkeypatch):
+    """宿主的变量名带着自己的前缀时，不必为了接这个库去改部署脚本。"""
+    monkeypatch.setenv("MYAPP_RECALL_K", "9")
+    assert MemoryConfig.from_env(prefix="MYAPP_").recall_k == 9
