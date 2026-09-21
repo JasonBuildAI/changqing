@@ -11,7 +11,14 @@ import time
 
 from changqing.consolidate import consolidate, find_duplicates
 from changqing.runtime import Runtime
-from changqing.store import append_op, list_facts, materialize, read_ops
+from changqing.store import (
+    append_op,
+    get_fact,
+    list_facts,
+    materialize,
+    open_index,
+    read_ops,
+)
 
 UID = "u" + "4" * 16
 OLD = time.time() - 400 * 86400  # 一年多以前
@@ -120,7 +127,100 @@ def test_dry_run_changes_nothing(rt: Runtime):
     materialize(w)
     stats = consolidate(w, dry_run=True)
     assert stats["merged"] == 1, "算出来了"
-    assert stats["ops"] == 1, "也报了会追加几条操作"
-    assert stats["pruned"] == 0, "但一行都没剪"
+    assert stats["ops"] >= 1, "也报了会追加几条操作"
+    assert stats["swept"] == 0, "但索引一条都没动"
+    assert stats["pruned"] == 0, "一行都没剪"
     assert len(list_facts(w)) == 2, "库里还是两条"
     assert all(o["op"] != "MERGE" for o in read_ops(w)), "一条 MERGE 都没写"
+
+
+# ---------------------------------------------------------------- 衰减
+TODAY = time.strftime("%Y-%m-%d")
+
+
+def test_stale_facts_lose_weight_but_are_not_deleted(rt: Runtime):
+    """一年多没用过、又不重要的：权重压一档，但**不删**。
+
+    降权是「她该多快想起这件事」的旋钮，不是「这件事还在不在」的开关 ——
+    压下去的仍然查得到，只是不再抢热路径的位置。
+    """
+    w = "u" + "a" * 16
+    add(w, "F-1", "喜欢的乐队", "慢慢说", importance=0.8)
+    materialize(w)
+    stats = consolidate(w)
+    assert stats["derogated"] == 1, "压了一条"
+    assert stats["kept"] == 0, "没有别的可保留"
+    assert get_fact(w, "F-1")["importance"] == 0.56, "0.8 * 0.7"
+    assert len(list_facts(w)) == 1, "事实还在"
+    derogations = [o for o in read_ops(w) if o["op"] == "DEROGATE"]
+    assert len(derogations) == 1, "降权也是追加的操作，不是改库"
+    assert derogations[0]["id"] == "F-1"
+
+
+def test_decay_stops_at_the_floor(rt: Runtime):
+    """压到地板就停 —— 否则同一条事实每巩固一次就再写一条 DEROGATE。"""
+    w = "u" + "b" * 16
+    add(w, "F-1", "喜欢的乐队", "慢慢说", importance=0.05)
+    materialize(w)
+    stats = consolidate(w)
+    assert stats["derogated"] == 0, "已经在地板上"
+    assert stats["kept"] == 1, "算它一条保住了"
+    assert get_fact(w, "F-1")["importance"] == 0.05
+    assert all(o["op"] != "DEROGATE" for o in read_ops(w)), "一条 DEROGATE 都没写"
+
+
+def test_recent_facts_are_left_alone(rt: Runtime):
+    """刚说的事不降权 —— 判据是「多久没用过」，不是「重不重要」。"""
+    w = "u" + "c" * 16
+    add(w, "F-1", "喜欢的乐队", "慢慢说", importance=0.8, valid_from=TODAY)
+    materialize(w)
+    stats = consolidate(w)
+    assert stats["derogated"] == 0
+    assert stats["kept"] == 1
+    assert get_fact(w, "F-1")["importance"] == 0.8, "权重一个字没动"
+
+
+def test_pinned_and_promises_never_decay(rt: Runtime):
+    """钉住的、以及承诺类的永不降权。
+
+    承诺是「她欠他的一件事」，与「她记不记得」无关；拿排序权重去压一句还没
+    兑现的承诺，等于让它悄悄沉底 —— 那正是用户能察觉到的「她忘了自己说过」。
+    """
+    w = "u" + "d" * 16
+    add(w, "F-1", "喜欢的乐队", "慢慢说", importance=0.8, pinned=1)
+    add(w, "F-2", "答应", "周末带他去看展", importance=0.8, kind="promise")
+    add(w, "F-3", "约好", "国庆一起去爬山", importance=0.8, kind="commitment")
+    materialize(w)
+    stats = consolidate(w)
+    assert stats["derogated"] == 0, "一条都没压"
+    assert stats["kept"] == 3
+    assert all(get_fact(w, fid)["importance"] == 0.8 for fid in ("F-1", "F-2", "F-3"))
+
+
+def test_invalidated_facts_leave_the_full_text_index(rt: Runtime):
+    """失效的行从全文索引里摘掉 —— 数据还在，但检索不该再命中一个作废的值。
+
+    「她想起一件早就作废的事」不报任何错，也不进任何指标，所以这里断言的是
+    索引那一列真的被清空了，而不只是返回值里那个数字。
+    """
+    w = "u" + "e" * 16
+    add(w, "F-1", "养的猫叫", "团子")
+    materialize(w)
+    append_op(w, {"op": "INVALIDATE", "id": "F-1", "reason": "猫送人了"})
+    materialize(w)
+    con = open_index(w)
+    try:
+        before = con.execute("SELECT text_index FROM facts WHERE id='F-1'").fetchone()
+    finally:
+        con.close()
+    assert before["text_index"], "失效之前索引里是有词的"
+
+    stats = consolidate(w)
+    assert stats["swept"] == 1, "摘了一条"
+    con = open_index(w)
+    try:
+        after = con.execute("SELECT text_index FROM facts WHERE id='F-1'").fetchone()
+    finally:
+        con.close()
+    assert after is not None, "行还在（摘索引不等于删数据）"
+    assert not after["text_index"], "索引那一列空了"
