@@ -9,7 +9,7 @@ from __future__ import annotations
 from changqing.adapters.mock import MockEmbedder
 from changqing.runtime import Runtime, using
 from changqing.store import append_op, materialize, open_index
-from changqing.vectors import LIVE_STATUS, reindex
+from changqing.vectors import LIVE_STATUS, reindex, stats
 
 UID = "u" + "v" * 16
 
@@ -213,3 +213,59 @@ def test_limit_is_only_for_self_checks(rt: Runtime):
         assert first["pending"] == 0, "pending 数的是「这一趟没编完的」"
         second = reindex(UID)
     assert second["encoded"] == 1, "下一趟把剩下的补上"
+
+
+# ---------------------------------------------------------------- 状态面板
+def test_stats_says_nothing_rather_than_lying_when_the_layer_is_off(rt: Runtime):
+    """没装向量时，`model` 必须是空串、`model_mismatch` 必须是 False。
+
+    「拿不到身份」和「身份不匹配」是两件事。混成一件的话，一个从没用过向量的
+    用户会天天在面板上看到一条「索引模型不匹配」的红告警 —— 而那条告警
+    本身没有错可修。
+    """
+    add(UID, "F-1", "养的猫叫", "团子")
+    materialize(UID)
+    out = stats(UID)  # fixture 里是 NullEmbedder
+    assert out["facts"] == 1, "事实数照报，它不依赖向量"
+    assert out["vectors"] == 0
+    assert out["stale"] == 1
+    assert out["model"] == "", "没有编码器就没有身份"
+    assert out["model_mismatch"] is False, "不知道 ≠ 不匹配"
+
+
+def test_stats_goes_green_after_a_successful_reindex(rt: Runtime):
+    add(UID, "F-1", "养的猫叫", "团子")
+    add(UID, "F-2", "不吃", "香菜")
+    materialize(UID)
+    with with_embedder(rt, MockEmbedder()):
+        reindex(UID)
+        out = stats(UID)
+    assert out["facts"] == 2
+    assert out["vectors"] == 2
+    assert out["stale"] == 0
+    assert out["dim"] == MockEmbedder().dim
+    assert out["models"] == ["changqing/mock-ngram-v1"]
+    assert out["model"] == "changqing/mock-ngram-v1"
+    assert out["model_mismatch"] is False
+
+
+def test_a_same_dimension_model_swap_is_visible_even_though_stale_is_zero(rt: Runtime):
+    """**这条是 `stats` 存在的理由。**
+
+    换一个同维度的模型之后、`reindex` 还没跑的那段窗口里：
+    `facts == vectors`、`stale == 0`、`dim` 也一样 —— 只看这两个数的话
+    面板一片绿，而检索已经在拿**两个不同的向量空间**算余弦了。
+    唯一的证据是库里那批 `model` 不等于当前编码器。
+    """
+    add(UID, "F-1", "养的猫叫", "团子")
+    materialize(UID)
+    with with_embedder(rt, MockEmbedder()):
+        reindex(UID)
+
+    with with_embedder(rt, OtherModel()):
+        out = stats(UID)
+    assert out["facts"] == out["vectors"] == 1
+    assert out["stale"] == 0, "这正是那个「看起来一切正常」的假象"
+    assert out["models"] == ["changqing/mock-ngram-v1"], "库里真正在的是旧空间"
+    assert out["model"] == "changqing/mock-ngram-v2", "当前编码器已是新的"
+    assert out["model_mismatch"] is True, "所以唯一能看见它的就是这个字段"

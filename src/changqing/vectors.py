@@ -65,6 +65,22 @@ def _pack(vec: Any) -> bytes:
     return array.array("f", [float(x) for x in vec]).tobytes()
 
 
+def _local_model() -> str:
+    """当前注入的编码器的身份。读不到、或压根没装，返回空串（宁可不判，不误判）。
+
+    空串在这里是**有意义**的：`stats` 用它来回答「库里那批向量是不是它编的」，
+    拿不到身份时唯一诚实的答案是「不知道」而不是「不匹配」——
+    后者会让一个没装向量的人天天看到一条红告警。
+    """
+    try:
+        emb = runtime().embedder
+        if not embedder_enabled(emb):
+            return ""
+        return _model_of(emb)
+    except Exception:  # noqa: BLE001  派生层的事不该往外抛
+        return ""
+
+
 def reindex(uid: str, *, batch: int = 0, limit: int = 0) -> dict[str, Any]:
     """把缺失 / 变旧的向量补齐，并清掉不该留的。返回统计。
 
@@ -180,4 +196,58 @@ def reindex(uid: str, *, batch: int = 0, limit: int = 0) -> dict[str, Any]:
         con.close()
 
 
-__all__ = ["LIVE_STATUS", "reindex"]
+def stats(uid: str) -> dict[str, Any]:
+    """这个用户的向量索引状态。面板与自检用。**只读，不碰模型权重。**
+
+    `model` 是**当前编码器**的身份，`model_mismatch` 回答「库里那批不是它编的」
+    —— 这两个字段是「换过模型、索引还没跟上」那个窗口里**唯一**的可观测点。
+
+    为什么单看 `stale`（事实数 - 向量数）不够：换一个**同维度**的模型时，
+    `facts == vectors == stale=0`，面板一片绿，而检索已经在拿两个不同的向量空间
+    算余弦了 —— 结果是「她突然什么都想不起来了」，没有任何报错。所以这里坚持
+    报出库里实际存在的每一个 `model` 取值，让「混了两个空间」有地方看得见。
+    """
+    out: dict[str, Any] = {
+        "facts": 0,
+        "vectors": 0,
+        "stale": 0,
+        "dim": 0,
+        "model": "",
+        "models": [],
+        "model_mismatch": False,
+    }
+    cur_model = _local_model()
+    out["model"] = cur_model
+    try:
+        con = open_index(uid)
+    except Exception:  # noqa: BLE001  派生层坏了不该把面板也带走
+        return out
+    try:
+        row = con.execute(
+            f"SELECT COUNT(*) AS n FROM facts WHERE status IN ({_MARKS})",
+            LIVE_STATUS,
+        ).fetchone()
+        out["facts"] = int(row["n"] if row else 0)
+        row = con.execute(
+            "SELECT COUNT(*) AS n, MAX(dim) AS d, "
+            "COUNT(DISTINCT COALESCE(model,'')) AS m FROM vectors"
+        ).fetchone()
+        out["vectors"] = int(row["n"] if row else 0)
+        out["dim"] = int((row["d"] if row else 0) or 0)
+        out["stale"] = max(0, out["facts"] - out["vectors"])
+        out["models"] = sorted(
+            str(r["model"] or "")
+            for r in con.execute(
+                "SELECT DISTINCT COALESCE(model,'') AS model FROM vectors"
+            ).fetchall()
+        )
+        # 空库、或没有当前编码器身份时不判 —— 那两种情况下「不匹配」都是误报。
+        out["model_mismatch"] = bool(out["vectors"] and cur_model and out["models"] != [cur_model])
+        return out
+    except Exception:  # noqa: BLE001
+        return out
+    finally:
+        con.close()
+
+
+__all__ = ["LIVE_STATUS", "reindex", "stats"]
