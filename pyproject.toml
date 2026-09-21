@@ -1,0 +1,67 @@
+[build-system]
+# 用 hatchling：src 布局开箱即用，且它不把「打包」和「依赖解析」绑在一起。
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "changqing"
+version = "0.1.0"
+description = "Long-lived memory for companion AI: layered, model-consolidated, traceable."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{ name = "JasonBuildAI" }]
+keywords = ["memory", "llm", "agent", "companion", "retrieval", "chinese"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Typing :: Typed",
+]
+
+# 核心**零第三方依赖**：存储、抽取、检索、梳理全用标准库写成。
+# 下面每一组都是可选能力，按需装；只装核心也能跑（离线 mock 适配器）。
+dependencies = []
+
+[project.optional-dependencies]
+# OpenAI 兼容的嵌入与对话模型适配器。
+openai = ["httpx>=0.27"]
+# 可挂载的 FastAPI 路由（`changqing.server`）。
+server = ["fastapi>=0.110", "pydantic>=2.6", "uvicorn>=0.27"]
+# 中文分词。缺失时自动退化成字符 bigram：召回略降，功能不变。
+chinese = ["jieba>=0.42"]
+dev = [
+  "pytest>=8.0",
+  "pytest-cov>=5.0",
+  "mypy>=1.11",
+  "ruff>=0.6",
+  "httpx>=0.27",
+  "fastapi>=0.110",
+  "pydantic>=2.6",
+]
+all = [
+  "httpx>=0.27",
+  "fastapi>=0.110",
+  "pydantic>=2.6",
+  "uvicorn>=0.27",
+  "jieba>=0.42",
+]
+
+[project.urls]
+Homepage = "https://github.com/JasonBuildAI/changqing"
+Repository = "https://github.com/JasonBuildAI/changqing"
+Issues = "https://github.com/JasonBuildAI/changqing/issues"
+Changelog = "https://github.com/JasonBuildAI/changqing/blob/main/CHANGELOG.md"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/changqing"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src", "tests", "docs", "examples", "benchmarks", "README.md", "README.en.md", "LICENSE", "NOTICE", "CHANGELOG.md"]
+
