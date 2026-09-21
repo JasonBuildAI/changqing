@@ -72,6 +72,43 @@ def _state_path(uid: str) -> Path:
     return user_dir(uid) / _STATE_FILE
 
 
+# ---------------------------------------------------------------- 追加写
+def append_text(path: Path, text: str) -> None:
+    """把 `text` 追加到 `path`，**保证它从新的一行开始**，写完 fsync。
+
+    **为什么需要「保证从新的一行开始」这一句。** 两个只追加的文件（L0 原话、
+    操作日志）都按行解析，而它们的最后一行**可能是残行** —— 上一个进程被杀在
+    write 中间，那半行没有换行符。此时朴素的 `open(path, "a")` 会把下一条记录
+    直接接在残行后面：
+
+        {"op": "ADD", "id": "F-0003", "sub{"op": "ADD", "id": "F-0004", ...}
+
+    结果是**一条坏行吞掉了后面那条好记录**。丢的如果是「操作日志」，那这条操作
+    永远不会再被物化（事实凭空消失）；丢的如果是 L0，那是**原文永久丢失** ——
+    而两种都不报错，读侧只是照常跳过这一行。
+
+    读侧（`read_ops` / `read_turns`）本来就会丢掉残行，但那救不了「接在后面」的
+    那一条：它不在残行里，它就是被残行吃掉了。所以必须在**写侧**断开。
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # `a+b` 而不是 `ab`：追加模式下的普通 `ab` 是**只写**的，`read(1)` 会抛
+    # `io.UnsupportedOperation`（它同时是 OSError 的子类）—— 于是下面那个
+    # 「看一眼最后一个字节」会被静默跳过，而症状正是这一整段要修的那个：
+    # 补不上换行，下一条记录照样被残行吞掉。加号那一个字符是这条修复的关键。
+    with open(path, "a+b") as f:
+        # 空文件时 `seek(-1, SEEK_END)` 会抛 OSError —— 那正是「文件是空的」。
+        try:
+            f.seek(-1, os.SEEK_END)
+            needs_break = f.read(1) != b"\n"
+        except OSError:
+            needs_break = False
+        if needs_break:
+            f.write(b"\n")
+        f.write(text.encode("utf-8"))
+        f.flush()
+        os.fsync(f.fileno())
+
+
 # ---------------------------------------------------------------- state
 def _load_state(uid: str) -> dict[str, Any]:
     p = _state_path(uid)

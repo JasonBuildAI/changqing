@@ -24,7 +24,16 @@ from pathlib import Path
 from typing import Any
 
 from ..runtime import runtime
-from .paths import _load_state, _lock, _save_state, day_path, sessions_dir, user_dir, watermark
+from .paths import (
+    _load_state,
+    _lock,
+    _save_state,
+    append_text,
+    day_path,
+    sessions_dir,
+    user_dir,
+    watermark,
+)
 
 _TURN_RE = re.compile(r"^- (T-\d{6,}) (\d{2}:\d{2}:\d{2}) (user|assistant) (.*)$")
 
@@ -140,11 +149,9 @@ def append_turn(uid: str, turn: dict[str, Any]) -> list[str]:
             out.append(_fmt_line(tid, ts, role, body) + "\n")
             ids.append(tid)
 
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "a", encoding="utf-8", newline="\n") as f:
-            f.write("".join(out))
-            f.flush()
-            os.fsync(f.fileno())  # 崩溃时最多丢最后一条，且是残行
+        # 崩溃时最多丢最后一条，且是残行；而**下一条不能被它吞掉** ——
+        # 尾部是残行时先断开换行（原因见 `paths.append_text`）。
+        append_text(path, "".join(out))
 
         rounds = int(st.get("rounds") or 0) + 1
         # **单独记「有用户发言的轮数」**：抽取的游标必须按它走，不能按 rounds。

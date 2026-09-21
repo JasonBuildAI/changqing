@@ -133,6 +133,32 @@ def test_a_torn_tail_with_a_legal_prefix_is_also_dropped(rt: Runtime):
     assert not any(r["id"] == "T-000100" for r in rows)
 
 
+def test_a_torn_tail_does_not_swallow_the_next_turn(rt: Runtime):
+    """**残行不能吃掉下一条记录。** 这是本层真踩过的一个数据丢失路径。
+
+    上一个进程被杀在 write 中间，留下的半行没有换行符。此时朴素地
+    `open(path, "a")` 会把下一条轮次直接接在残行后面：
+
+        - T-000099 12:0- T-000100 12:05:33 user 他刚说的话
+
+    读侧只丢掉坏那一行，而**被接上去的那一整条也在同一行里** —— 于是它跟着一起
+    被丢掉。如果是原话，那就是**永久丢失**（L0 不可再生）；如果是操作日志，
+    那条操作再也不会被物化。两种都不报错，读侧只是照常跳过。
+
+    所以「丢掉尾部残行」这条判据之外，还必须有一条「断开换行再写」。
+    """
+    append_turn(UID_B, turn("第一行\n第二行", "嗯。"))
+    before = len(read_turns(UID_B, DAY))
+    _append_raw(UID_B, "- T-000099 12:0")  # 半行，没有换行符
+
+    ids = append_turn(UID_B, turn("他刚说的话", "嗯。"))
+    rows = read_turns(UID_B, DAY)
+    assert len(rows) == before + 2, f"新的一轮被残行吃掉了：{rows}"
+    assert ids[0] == "T-000003"
+    assert rows[-2]["text"] == "他刚说的话", "他刚说的那句话读得回来"
+    assert not any(r["id"] == "T-000099" for r in rows), "残行自己仍然被丢掉"
+
+
 def test_a_legacy_tagged_line_still_parses(rt: Runtime):
     """写侧早就不产标签了，但**读侧仍认**：磁盘上已有的老文件还在。
 

@@ -13,12 +13,11 @@
 from __future__ import annotations
 
 import json
-import os
 import sqlite3
 import time
 from typing import Any
 
-from .paths import _load_state, _lock, _save_state, log_path
+from .paths import _load_state, _lock, _save_state, append_text, log_path
 
 
 def append_op(uid: str, op: dict[str, Any]) -> None:
@@ -30,12 +29,9 @@ def append_op(uid: str, op: dict[str, Any]) -> None:
     rec.setdefault("ts", time.strftime("%Y-%m-%dT%H:%M:%S"))
     line = json.dumps(rec, ensure_ascii=False) + "\n"
     with _lock(uid):
-        p = log_path(uid)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        with open(p, "a", encoding="utf-8", newline="\n") as f:
-            f.write(line)
-            f.flush()
-            os.fsync(f.fileno())
+        # 走 `append_text` 而不是自己 open("a")：日志尾部可能是上一个进程留下的
+        # 残行，不先断开换行的话这条记录会被它吞掉（原因见 `paths.append_text`）。
+        append_text(log_path(uid), line)
 
 
 def read_ops(uid: str) -> list[dict[str, Any]]:
