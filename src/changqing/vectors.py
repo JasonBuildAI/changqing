@@ -21,7 +21,7 @@ import array
 import hashlib
 from typing import Any
 
-from .ports import Embedder
+from .ports import Embedder, embedder_enabled
 from .retrieve import card_text
 from .runtime import runtime
 from .store import open_index
@@ -72,7 +72,7 @@ def reindex(uid: str, *, batch: int = 0, limit: int = 0) -> dict[str, Any]:
     """
     client = runtime().embedder
     cfg = runtime().config
-    if not _enabled(client):
+    if not embedder_enabled(client):
         return {"ok": True, "skipped": "disabled", "encoded": 0, "removed": 0}
     # **不许在这里加载模型**：这是后台整理线程，一次加载最坏要几十秒到两分钟，
     # 卡住的不是一个用户的首字、而是整条整理队列 —— 后面排队的人跟着一起等。
@@ -178,17 +178,6 @@ def reindex(uid: str, *, batch: int = 0, limit: int = 0) -> dict[str, Any]:
         }
     finally:
         con.close()
-
-
-def _enabled(client: Embedder) -> bool:
-    """有没有一条可用的向量路。
-
-    判据是「注入的实现自己说它开着」而不是「配置里写了什么」：向量能力是注入
-    进来的，配置里没有 provider 这一项 —— 也就没有「配置说开、实现是空」的
-    那种不一致。
-    """
-    name = str(getattr(client, "name", "") or "").strip().lower()
-    return bool(name) and name not in ("none", "off", "0")
 
 
 __all__ = ["LIVE_STATUS", "reindex"]

@@ -32,6 +32,7 @@ from operator import mul
 from typing import Any
 
 from .config import MemoryConfig
+from .ports import embedder_enabled
 from .runtime import runtime
 from .store import list_summaries, list_topics, mark_used, open_index
 from .tokenize import to_query, tokenize
@@ -581,16 +582,13 @@ def _vec_hits(con, query: str, dim: int, allowed: set | None = None, limit: int 
 
 
 def _embedding_on(emb) -> bool:
-    """有没有一条可用的向量路。
+    """**现在**有没有一条可用的向量路（装上了，而且已经加载好）。
 
-    判据是「注入的实现自己说它开着」而不是「配置里写了什么」：向量能力现在是
-    注入进来的，配置里没有 provider 这一项 —— 也就没有「配置说开、实现是空」的
-    那种不一致。
+    与 `embedder_enabled` 是两问：那一问是「这条路装没装」，这一问是「现在能不能
+    用它」。分成两问是因为加载动辄几十秒 —— 没加载好不等于没装，而检索这一轮
+    只需要知道前者能不能立刻用。
     """
-    name = str(getattr(emb, "name", "") or "").strip().lower()
-    if not name or name in ("none", "off", "0"):
-        return False
-    return bool(getattr(emb, "loaded", lambda: False)())
+    return embedder_enabled(emb) and bool(getattr(emb, "loaded", lambda: False)())
 
 
 def _unpack_encoded(vec: Sequence[float]) -> array.array:

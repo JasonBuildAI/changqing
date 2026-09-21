@@ -83,10 +83,29 @@ class UsageSink(Protocol):
 
 
 # ---------------------------------------------------------------- 默认实现
+# 表示「这条路关着」的名字。`NullEmbedder` 用它，各处的判断也认它 ——
+# 这条判断曾经在检索层与写入层各准备写一份，两处一旦漂移就会出现
+# 「检索以为没有向量、写入以为有」这种**静默**的空转。
+_OFF_NAMES = ("none", "off", "0")
+
+
+def embedder_enabled(emb: Any) -> bool:
+    """注入的向量实现自己说它开着吗。
+
+    判据是**实现自己声明的名字**，不是配置里的开关：向量能力是注入进来的，
+    配置里根本没有 provider 这一项 —— 也就没有「配置说开、实现是空」的不一致。
+
+    **它不等于「现在能用」**：能用还要看 `ready()` / `loaded()`
+    （见 `retrieve._embedding_on`）。这里只回答「这条路装没装」。
+    """
+    name = str(getattr(emb, "name", "") or "").strip().lower()
+    return bool(name) and name not in _OFF_NAMES
+
+
 class NullEmbedder:
     """关掉向量召回。它存在是为了让调用方不必到处写 `if`。"""
 
-    name = "none"
+    name = _OFF_NAMES[0]
     dim = 0
     repo = ""
 
