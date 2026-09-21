@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Sequence
+from datetime import datetime, timedelta
 
 from .persona import PersonaProfile
 from .runtime import runtime
@@ -142,6 +143,130 @@ def build_messages(
         {"role": "system", "content": build_system(persona)},
         {"role": "user", "content": EXTRACT_USER.format(today=today, lines="\n".join(lines))},
     ]
+
+
+# 主动话题的上限与长度。它是「她想说什么」的一句话，不是一篇文档：
+# 超长一条就能把整个话题预算占光，把其他几条挤掉。
+TOPIC_MAX = 3
+TOPIC_TEXT_CHARS = 60
+# 日期的唯一形状。检索与渲染都按 `[:10]` 切，别的形状会被**悄悄截断**，
+# 所以这里只认这一种，其余一律当没给。
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def parse_topics(raw: str, day: str = "") -> list[dict]:
+    """取出「她下次想主动提的事」。坏 JSON / 缺字段 / 空数组都是「没话题」，绝不抛。
+
+    这一层只做形状校验（字段存在、长度合适、kind 合法），**不做回引校验**：
+    话题不是事实，进不了「有没有依据」那套对比（渲染时也不带编号）。所以它可以为空、
+    也可以不贴 `ref` —— 但一条都不许多于 `TOPIC_MAX` 条：它是预算有限的 prompt
+    片段，不是待办清单。
+
+    `day` 是闸 4 的同一个基准（那一轮的时间）：模型爱把 `due_day` 写成「下周三」，
+    不换算就等于存了一个会过期的词进去。换算不出具体日期的一律当没给（宁缺勿错）。
+    """
+    obj = _first_json_obj(raw)
+    if not isinstance(obj, dict):
+        return []
+    rows = obj.get("topics")
+    if not isinstance(rows, list):
+        return []
+    out: list[dict] = []
+    for x in rows:
+        if not isinstance(x, dict):
+            continue
+        text = str(x.get("text") or "").strip()
+        if not text:
+            continue
+        kind = str(x.get("kind") or "share").strip().lower()
+        if kind not in ("followup", "share", "ask"):
+            kind = "share"
+        due = str(x.get("due_day") or "").strip()
+        if day and due:
+            due = absolutize(due, day)
+        out.append(
+            {
+                "text": text[:TOPIC_TEXT_CHARS],
+                "kind": kind,
+                # 与 facts 的 due 同一口径：算不出具体日期就当没给。
+                # 一个错的日期比没有更糟 —— 她会照着一个不存在的日子问你。
+                "due_day": due if _DATE_RE.match(due) else "",
+                "ref": str(x.get("ref") or "").strip()[:12],
+            }
+        )
+        if len(out) >= TOPIC_MAX:
+            break
+    return out
+
+
+# ---------------------------------------------------------------- 闸 4：时间绝对化
+_WEEKDAYS = {"一": 0, "二": 1, "三": 2, "四": 3, "五": 4, "六": 5, "日": 6, "天": 6}
+_REL_DAY = {"今天": 0, "昨天": -1, "前天": -2, "明天": 1, "后天": 2}
+_REL_RE = re.compile(r"(上周|这周|本周|下周)([一二三四五六日天])|(今天|昨天|前天|明天|后天)")
+# 光秃秃的周/月锚点：「上个月搬了家」没法唯一还原成某一天，
+# 但留在**长期事实**里也会随时间失效（三个月后「上周」就不再是那一周了）。
+_BARE_ANCHOR_RE = re.compile(r"(上周|这周|本周|下周|上个月|这个月|下个月)")
+
+
+def absolutize(text: str, day: str) -> str:
+    """把相对时间词换成绝对日期。换算基准是**那一轮的时间戳**，不是今天。
+
+    模型不知道今天是几号，它写「上周五」纯属编的；而我们手里有那一轮的真实日期，
+    能算准。两层处理：
+
+      1. 能算准的（上周五 / 昨天 / 下周三）换成具体日期；
+      2. 算不准的纯时间锚点（光秃秃的「上周」「这个月」）**直接去掉** ——
+         把一句会随时间长歪的话留在一条要记很久的事实里，比不写它更糟。
+         准确时间由事实自己的 `valid_from` 承担。
+
+    刻意**不动**「以前 / 之前 / 最近」：它们带的是体貌意义，「我以前住北京」
+    去掉「以前」就把意思改反了 —— 那是内容，不是时间锚点。
+    """
+    if not text:
+        return text
+    try:
+        base = datetime.strptime(day, "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return text
+
+    def sub(m: re.Match) -> str:
+        if m.group(1):  # 上周五 / 这周三
+            which, wd = m.group(1), _WEEKDAYS.get(m.group(2), 0)
+            monday = base - timedelta(days=base.weekday())
+            offset = {"上周": -7, "这周": 0, "本周": 0, "下周": 7}[which]
+            return (monday + timedelta(days=offset + wd)).isoformat()
+        return (base + timedelta(days=_REL_DAY[m.group(3)])).isoformat()
+
+    return _BARE_ANCHOR_RE.sub("", _REL_RE.sub(sub, text))
+
+
+def _num(v, lo: float, hi: float, default: float) -> float:
+    """夹到 [lo, hi]。不是数（None / "abc" / NaN）就给默认值。
+
+    NaN 必须单独判：`max(lo, min(hi, nan))` 在 Python 里一路是 NaN，
+    它不会报错，只会让这一条事实的分数永远比不出大小。
+    """
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return default
+    if f != f:
+        return default
+    return max(lo, min(hi, f))
+
+
+def _norm_due(v, day: str) -> str | None:
+    """承诺的截止日期：绝对化之后必须是 YYYY-MM-DD，否则宁可没有。
+
+    模型给的 due 是自由文本（「下周三」「周末」），先过 absolutize。算不出具体
+    日期的就丢掉 —— 一个错的截止日期比没有更糟：她会照着它说「你上周就该带我去了」。
+    """
+    s = str(v or "").strip()
+    if not s or s.lower() in ("null", "none", "无"):
+        return None
+    s = absolutize(s, day)
+    m = re.search(r"\d{4}-\d{2}-\d{2}", s)
+    return m.group(0) if m else None
 
 
 # ---------------------------------------------------------------- 解析
