@@ -13,6 +13,7 @@ jieba、没装用 bigram，功能不降级成「搜不到」。
 
 from __future__ import annotations
 
+import contextlib
 import re
 import threading
 
@@ -35,10 +36,11 @@ def _load():
             return _JIEBA
         try:
             import jieba
-            jieba.setLogLevel(jieba.logging.ERROR)   # 别让它往 stdout 打建词典的日志
+
+            jieba.setLogLevel(jieba.logging.ERROR)  # 别让它往 stdout 打建词典的日志
             _JIEBA = jieba
             _BACKEND = "jieba"
-        except Exception:                            # noqa: BLE001  可选依赖
+        except Exception:  # noqa: BLE001  可选依赖
             _JIEBA = None
             _BACKEND = "bigram"
     return _JIEBA
@@ -87,9 +89,6 @@ def to_query(text: str) -> str:
 def warm() -> str:
     """启动预热：把词典建好、缓存落盘。返回分词器名字。"""
     _load()
-    try:
+    with contextlib.suppress(Exception):
         tokenize("今天画室很安静，光线很好。")
-    except Exception:                                # noqa: BLE001
-        pass
     return _BACKEND
-

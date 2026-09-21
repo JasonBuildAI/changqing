@@ -17,14 +17,16 @@ from typing import Any
 
 def _fact_text_index(fact: dict[str, Any]) -> str:
     from ..tokenize import to_index
-    return to_index(" ".join(str(fact.get(k) or "")
-                             for k in ("subject", "predicate", "object")))
+
+    return to_index(" ".join(str(fact.get(k) or "") for k in ("subject", "predicate", "object")))
 
 
-def list_facts(uid: str, *, status: str | None = None,
-               include_dead: bool = False) -> list[dict[str, Any]]:
+def list_facts(
+    uid: str, *, status: str | None = None, include_dead: bool = False
+) -> list[dict[str, Any]]:
     """列出事实。默认只给**当前有效**的（active 且 `valid_to` 为空）。"""
     from . import index
+
     con = index.open_index(uid)
     try:
         sql = "SELECT * FROM facts"
@@ -38,8 +40,7 @@ def list_facts(uid: str, *, status: str | None = None,
             where.append("(valid_to IS NULL OR valid_to='')")
         if where:
             sql += " WHERE " + " AND ".join(where)
-        sql += (" ORDER BY pinned DESC, importance DESC, persona_attention DESC, "
-                "id ASC")
+        sql += " ORDER BY pinned DESC, importance DESC, persona_attention DESC, id ASC"
         return [dict(r) for r in con.execute(sql, args).fetchall()]
     finally:
         con.close()
@@ -52,6 +53,7 @@ def pending_facts(uid: str) -> list[dict[str, Any]]:
 
 def get_fact(uid: str, fact_id: str) -> dict[str, Any] | None:
     from . import index
+
     con = index.open_index(uid)
     try:
         row = con.execute("SELECT * FROM facts WHERE id=?", (fact_id,)).fetchone()
@@ -70,10 +72,13 @@ def mark_used(uid: str, fact_ids: list[str]) -> None:
         return
     now = time.strftime("%Y-%m-%dT%H:%M:%S")
     from . import index
+
     con = index.open_index(uid)
     try:
-        con.executemany("UPDATE facts SET last_used_at=?, use_count=use_count+1 "
-                        "WHERE id=?", [(now, f) for f in fact_ids])
+        con.executemany(
+            "UPDATE facts SET last_used_at=?, use_count=use_count+1 WHERE id=?",
+            [(now, f) for f in fact_ids],
+        )
         con.commit()
     finally:
         con.close()
@@ -82,6 +87,7 @@ def mark_used(uid: str, fact_ids: list[str]) -> None:
 def fact_stats(uid: str) -> dict[str, Any]:
     """事实层的计数，给面板与自检用。"""
     from . import index
+
     con = index.open_index(uid)
     try:
         row = con.execute(
@@ -89,10 +95,13 @@ def fact_stats(uid: str) -> dict[str, Any]:
             "sum(CASE WHEN status='active' AND (valid_to IS NULL OR valid_to='') "
             "THEN 1 ELSE 0 END) AS live, "
             "sum(CASE WHEN status='pending' THEN 1 ELSE 0 END) AS pending "
-            "FROM facts").fetchone()
-        return {"total": int(row["total"] or 0), "live": int(row["live"] or 0),
-                "pending": int(row["pending"] or 0),
-                "applied_ops": int(index._meta_get(con, "applied_ops", "0") or 0)}
+            "FROM facts"
+        ).fetchone()
+        return {
+            "total": int(row["total"] or 0),
+            "live": int(row["live"] or 0),
+            "pending": int(row["pending"] or 0),
+            "applied_ops": int(index._meta_get(con, "applied_ops", "0") or 0),
+        }
     finally:
         con.close()
-

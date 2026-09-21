@@ -13,18 +13,18 @@ gzip 包，`read_turns` 透明读回两处。
 
 from __future__ import annotations
 
+import contextlib
+import gzip
 import os
 import re
 import shutil
-import time
-import gzip
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
 from ..runtime import runtime
-from .paths import (_load_state, _lock, _save_state, day_path, sessions_dir,
-                    user_dir, watermark)
+from .paths import _load_state, _lock, _save_state, day_path, sessions_dir, user_dir, watermark
 
 _TURN_RE = re.compile(r"^- (T-\d{6,}) (\d{2}:\d{2}:\d{2}) (user|assistant) (.*)$")
 
@@ -85,12 +85,11 @@ def _parse_tags(text: str) -> tuple[list[str], str]:
         if end < 0:
             break
         tags.append(rest[1:end])
-        rest = rest[end + 1:].lstrip()
+        rest = rest[end + 1 :].lstrip()
     return tags, rest
 
 
-def _fmt_line(tid: str, ts: float, role: str, text: str,
-              tags: list[str] | None = None) -> str:
+def _fmt_line(tid: str, ts: float, role: str, text: str, tags: list[str] | None = None) -> str:
     when = time.strftime("%H:%M:%S", time.localtime(ts))
     prefix = ("[" + "] [".join(tags) + "] ") if tags else ""
     return f"- {tid} {when} {role} {prefix}{escape_text(text)}"
@@ -145,33 +144,36 @@ def append_turn(uid: str, turn: dict[str, Any]) -> list[str]:
         with open(path, "a", encoding="utf-8", newline="\n") as f:
             f.write("".join(out))
             f.flush()
-            os.fsync(f.fileno())      # 崩溃时最多丢最后一条，且是残行
+            os.fsync(f.fileno())  # 崩溃时最多丢最后一条，且是残行
 
         rounds = int(st.get("rounds") or 0) + 1
         # **单独记「有用户发言的轮数」**：抽取的游标必须按它走，不能按 rounds。
         # 主动开口的轮（他一个字都没说）只写 assistant 行，而抽取只认 user 行 ——
         # 两个计数一旦错位，游标会被推过用户真正说过的话，症状是「她什么都记不住」
         # 而且**不报错**。
-        user_rounds = int(st.get("user_rounds") or 0) + \
-            (1 if any(r == "user" for r, _ in msgs) else 0)
-        st.update({
-            "next_seq": seq,
-            "day": day,
-            "last_hour": hour,
-            "rounds": rounds,
-            "user_rounds": user_rounds,
-            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(ts)),
-            "watermark": {
-                "last_turn_id": ids[-1] if ids else "",
-                "last_ts": ts,
+        user_rounds = int(st.get("user_rounds") or 0) + (
+            1 if any(r == "user" for r, _ in msgs) else 0
+        )
+        st.update(
+            {
+                "next_seq": seq,
                 "day": day,
+                "last_hour": hour,
                 "rounds": rounds,
-                # 整理游标：**保留**上一轮的值，不在这里重置。写它的只有
-                # 后台整理一处 —— 每一轮把它抹成 None 的话这个字段永远是空的，
-                # 而事实明明抽出来了（面板会一直显示 null）。
-                "extracted_upto": (st.get("watermark") or {}).get("extracted_upto"),
-            },
-        })
+                "user_rounds": user_rounds,
+                "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(ts)),
+                "watermark": {
+                    "last_turn_id": ids[-1] if ids else "",
+                    "last_ts": ts,
+                    "day": day,
+                    "rounds": rounds,
+                    # 整理游标：**保留**上一轮的值，不在这里重置。写它的只有
+                    # 后台整理一处 —— 每一轮把它抹成 None 的话这个字段永远是空的，
+                    # 而事实明明抽出来了（面板会一直显示 null）。
+                    "extracted_upto": (st.get("watermark") or {}).get("extracted_upto"),
+                },
+            }
+        )
         _save_state(uid, st)
     return ids
 
@@ -183,10 +185,9 @@ def remember(uid: str, turn: dict[str, Any]) -> None:
     """
     if not runtime().config.enabled:
         return
-    try:
+    # 记忆写不动也得能说话：吞掉写入异常，但**不吞掉返回值**（没有返回值）。
+    with contextlib.suppress(Exception):
         append_turn(uid, turn)
-    except Exception:                 # noqa: BLE001  记忆写不动也得能说话
-        pass
 
 
 # ---------------------------------------------------------------- 读取
@@ -206,13 +207,22 @@ def _turn_rows(day: str, text: str) -> list[dict[str, Any]]:
             continue
         m = _TURN_RE.match(line)
         if not m:
-            continue                  # 标题、空行、以及被截断的残行
+            continue  # 标题、空行、以及被截断的残行
         tid, when, role, payload = m.groups()
         tags: list[str] = []
         if role == "assistant":
             tags, payload = _parse_tags(payload)
-        rows.append({"id": tid, "day": day, "hour": hour, "time": when,
-                     "role": role, "tags": tags, "text": unescape_text(payload)})
+        rows.append(
+            {
+                "id": tid,
+                "day": day,
+                "hour": hour,
+                "time": when,
+                "role": role,
+                "tags": tags,
+                "text": unescape_text(payload),
+            }
+        )
     return rows
 
 
@@ -229,13 +239,13 @@ def _day_sources(uid: str) -> list[tuple[str, Path]]:
     live = sessions_dir(uid)
     arch = _archive_dir(uid)
     found: dict[str, Path] = {}
-    for p in (sorted(live.glob("*.md")) if live.is_dir() else []):
+    for p in sorted(live.glob("*.md")) if live.is_dir() else []:
         if _DAY_FILE_RE.match(p.stem):
             found[p.stem] = p
-    for p in (sorted(arch.glob("*" + _GZ_SUFFIX)) if arch.is_dir() else []):
+    for p in sorted(arch.glob("*" + _GZ_SUFFIX)) if arch.is_dir() else []:
         # 不能写 `p.stem`：`2026-01-05.md.gz` 的 stem 是 `2026-01-05.md`
         # （只剥一层后缀），拿去当「天」用会让 day 字段凭空多一个 `.md`。
-        found.setdefault(p.name[:-len(_GZ_SUFFIX)], p)
+        found.setdefault(p.name[: -len(_GZ_SUFFIX)], p)
     return [(d, found[d]) for d in sorted(found)]
 
 
@@ -307,10 +317,8 @@ def _same_bytes(src: Path, gz: Path) -> bool:
 
 def _unlink_quiet(p: Path) -> None:
     """删不掉就算了（临时文件残留不致命，原话才致命）。"""
-    try:
+    with contextlib.suppress(OSError):
         p.unlink()
-    except OSError:
-        pass
 
 
 def archive_old_turns(uid: str, *, months: int | None = None) -> dict[str, Any]:
@@ -333,16 +341,23 @@ def archive_old_turns(uid: str, *, months: int | None = None) -> dict[str, Any]:
 
     返回可观测的统计而不是 None —— 「今天到底搬没搬」要看得到。
     """
-    out: dict[str, Any] = {"files": 0, "bytes": 0, "months": [], "cutoff": "",
-                           "skipped": 0, "finished": 0, "errors": []}
+    out: dict[str, Any] = {
+        "files": 0,
+        "bytes": 0,
+        "months": [],
+        "cutoff": "",
+        "skipped": 0,
+        "finished": 0,
+        "errors": [],
+    }
     if months is None:
         months = runtime().config.retain_months
     try:
         months = int(months)
     except (TypeError, ValueError):
-        return out                        # 配置写坏了按「关掉」处理，不动盘
+        return out  # 配置写坏了按「关掉」处理，不动盘
     if months <= 0:
-        return out                        # 永不清理
+        return out  # 永不清理
     out["cutoff"] = cutoff = _cutoff_month(months)
 
     moved: list[str] = []
@@ -357,13 +372,13 @@ def archive_old_turns(uid: str, *, months: int | None = None) -> dict[str, Any]:
         for p in files:
             month = p.stem[:7]
             if month >= cutoff:
-                continue                  # 整月还在保留期里：这一个月一天都不动
+                continue  # 整月还在保留期里：这一个月一天都不动
             target = _archive_dir(uid) / f"{p.name}.gz"
             raw = b""
             try:
                 if target.exists():
                     if _same_bytes(p, target):
-                        p.unlink()        # 同源：崩在半路，补完最后那一步
+                        p.unlink()  # 同源：崩在半路，补完最后那一步
                         out["finished"] += 1
                     else:
                         # 不同源 = 归档之后又有人往这一天写过（时间戳回拨）。
@@ -374,15 +389,14 @@ def archive_old_turns(uid: str, *, months: int | None = None) -> dict[str, Any]:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 # 临时文件名带 pid 与线程 id：固定名会让两个写者互相搬走对方
                 # 正在写的文件。
-                tmp = target.with_name(
-                    f"{target.name}.{os.getpid()}-{threading.get_ident()}.tmp")
+                tmp = target.with_name(f"{target.name}.{os.getpid()}-{threading.get_ident()}.tmp")
                 try:
                     tmp.write_bytes(gzip.compress(raw, mtime=0))
                     os.replace(tmp, target)
                 except OSError:
                     _unlink_quiet(tmp)
                     raise
-                p.unlink()                # **只有 .gz 落好之后**才删原话
+                p.unlink()  # **只有 .gz 落好之后**才删原话
             except OSError as e:
                 # 一个文件搬不动不拖累其余月份（Windows 上句柄占着是常态），
                 # 但要如实报出来：静默 = 看不出「这几天一直没归档」。
@@ -431,24 +445,26 @@ def stats(uid: str) -> dict[str, Any]:
     turns = read_turns(uid)
     size = 0
     for p in d.glob("*.md"):
-        try:
+        with contextlib.suppress(OSError):
             size += p.stat().st_size
-        except OSError:
-            pass
     arch = _archive_dir(uid)
     arch_days: list[str] = []
     arch_size = 0
     if arch.exists():
         for p in arch.glob("*" + _GZ_SUFFIX):
-            arch_days.append(p.name[:-len(_GZ_SUFFIX)])
-            try:
+            arch_days.append(p.name[: -len(_GZ_SUFFIX)])
+            with contextlib.suppress(OSError):
                 arch_size += p.stat().st_size
-            except OSError:
-                pass
-    return {"uid": uid, "dir": str(user_dir(uid)), "days": days,
-            "turns": len(turns), "bytes": size,
-            "archived_days": sorted(arch_days), "archived_bytes": arch_size,
-            "watermark": watermark(uid)}
+    return {
+        "uid": uid,
+        "dir": str(user_dir(uid)),
+        "days": days,
+        "turns": len(turns),
+        "bytes": size,
+        "archived_days": sorted(arch_days),
+        "archived_bytes": arch_size,
+        "watermark": watermark(uid),
+    }
 
 
 # ---------------------------------------------------------------- 重置
@@ -481,7 +497,8 @@ def reset_memory(uid: str, mode: str | None = None) -> dict[str, Any]:
         # **这一步必须在下面那把 `_lock(uid)` 之外**：`index.wipe` 自己也要拿同一把
         # 锁，而 `threading.Lock` 不可重入 —— 套在里面会当场死锁。它自己拿锁，
         # 所以单独调用也是安全的。
-        from .index import wipe        # 惰性：store 内部按包分层，别在导入期成环
+        from .index import wipe  # 惰性：store 内部按包分层，别在导入期成环
+
         wipe(uid)
 
     with _lock(uid):
@@ -489,7 +506,7 @@ def reset_memory(uid: str, mode: str | None = None) -> dict[str, Any]:
             stamp = time.strftime("%Y%m%d%H%M%S")
             target = d.with_name(f"{d.name}.archived-{stamp}")
             n = 1
-            while target.exists():      # 同一秒里连点两次也不能互相覆盖
+            while target.exists():  # 同一秒里连点两次也不能互相覆盖
                 target = d.with_name(f"{d.name}.archived-{stamp}-{n}")
                 n += 1
             try:
@@ -500,9 +517,7 @@ def reset_memory(uid: str, mode: str | None = None) -> dict[str, Any]:
                 raise
             return {"mode": mode, "leftover": []}
 
-        try:
-            shutil.rmtree(d, ignore_errors=True)   # 2) 再删文件，尽力而为
-        except OSError:
-            pass
+        with contextlib.suppress(OSError):
+            shutil.rmtree(d, ignore_errors=True)  # 2) 再删文件，尽力而为
         leftover = sorted(p.name for p in d.iterdir()) if d.exists() else []
         return {"mode": mode, "leftover": leftover}

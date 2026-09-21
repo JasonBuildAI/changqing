@@ -7,8 +7,10 @@
 
 from __future__ import annotations
 
+import contextlib
 import zlib
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 
 class MockEmbedder:
@@ -33,7 +35,7 @@ class MockEmbedder:
         s = "".join(str(text or "").split())
         if len(s) < 2:
             return [s] if s else []
-        return [s[i:i + 2] for i in range(len(s) - 1)]
+        return [s[i : i + 2] for i in range(len(s) - 1)]
 
     def encode(self, texts: Sequence[str]) -> list[list[float]]:
         out: list[list[float]] = []
@@ -50,7 +52,7 @@ class MockEmbedder:
         return True
 
     def warm(self) -> bool | None:
-        return None                 # 没有一次性开销
+        return None  # 没有一次性开销
 
     def loaded(self) -> bool:
         return True
@@ -83,14 +85,10 @@ class MockLLM:
         if on_usage is not None:
             # 粗估一笔用量，让宿主的记账路径也有东西可记（不是真实 token 数）。
             chars = sum(len(str(m.get("content") or "")) for m in messages)
-            try:
+            # 记账是观测，自己炸了别带走这一轮。
+            with contextlib.suppress(Exception):
                 on_usage({"tin": int(chars / 1.5) + 1, "tout": int(len(text) / 1.5) + 1})
-            except Exception:       # noqa: BLE001  记账是观测，自己炸了别带走这一轮
-                pass
         if on_finish is not None:
-            try:
-                on_finish("stop")   # 档不会截断，别把档当截断
-            except Exception:       # noqa: BLE001
-                pass
+            with contextlib.suppress(Exception):
+                on_finish("stop")  # 档不会截断，别把档当截断
         return text
-

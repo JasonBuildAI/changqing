@@ -8,4 +8,3 @@
 from .mock import MockEmbedder, MockLLM
 
 __all__ = ["MockEmbedder", "MockLLM"]
-

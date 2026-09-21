@@ -153,4 +153,3 @@ def facts_md_path(uid: str) -> Path:
 
 def summary_path(uid: str) -> Path:
     return user_dir(uid) / "summaries.md"
-

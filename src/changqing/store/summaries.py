@@ -26,7 +26,7 @@ def _summary_id(text: str, day: str) -> str:
     换个进程就变一个值。那样同一段纪要会以两个 id 落库（`INSERT OR REPLACE`
     去不掉重），日志重放还会在库里堆出一串副本。
     """
-    h = hashlib.sha1(f"{day}\n{text}".encode("utf-8")).hexdigest()[:12]
+    h = hashlib.sha1(f"{day}\n{text}".encode()).hexdigest()[:12]
     return f"S-{(day or '').replace('-', '')}-{h}"
 
 
@@ -36,9 +36,17 @@ def append_summary(uid: str, text: str, day: str, turn_ref: str = "") -> str:
     if not text:
         return ""
     sid = _summary_id(text, day)
-    append_op(uid, {"op": "SUMMARY", "id": sid, "day": day,
-                    "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                    "text": text, "turn_ref": str(turn_ref or "")})
+    append_op(
+        uid,
+        {
+            "op": "SUMMARY",
+            "id": sid,
+            "day": day,
+            "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "text": text,
+            "turn_ref": str(turn_ref or ""),
+        },
+    )
     index.materialize(uid)
     render_summaries_md(uid)
     return sid
@@ -49,9 +57,9 @@ def list_summaries(uid: str, limit: int = 20) -> list[dict[str, Any]]:
     try:
         # 按「对话发生在哪天」倒序，同一天再按生成时间 —— id 是内容哈希，
         # 只按 id 排的话同一天里的先后就乱了。
-        rows = con.execute("SELECT * FROM summaries "
-                           "ORDER BY day DESC, created_at DESC, id DESC LIMIT ?",
-                           (limit,)).fetchall()
+        rows = con.execute(
+            "SELECT * FROM summaries ORDER BY day DESC, created_at DESC, id DESC LIMIT ?", (limit,)
+        ).fetchall()
         return [dict(r) for r in rows]
     finally:
         con.close()
@@ -65,12 +73,15 @@ def render_summaries_md(uid: str, limit: int = 500) -> Path | None:
     文件永远是当前库内容的一个投影。
     """
     rows = list_summaries(uid, limit=limit)
-    lines = ["# 会话纪要（渲染视图，只读）", "",
-             "> 这是从 log.jsonl 物化出来的视图，**不要手工编辑** —— 下次渲染会覆盖它。",
-             ""]
+    lines = [
+        "# 会话纪要（渲染视图，只读）",
+        "",
+        "> 这是从 log.jsonl 物化出来的视图，**不要手工编辑** —— 下次渲染会覆盖它。",
+        "",
+    ]
     if not rows:
         lines += ["（还没有纪要。它由后台整理从一段对话里总结出来。）", ""]
-    for r in reversed(rows):                  # 时间正序：读起来就是对话先后
+    for r in reversed(rows):  # 时间正序：读起来就是对话先后
         lines.append(f"## {str(r.get('day') or '').strip()} {r['id']}".rstrip())
         lines.append("")
         lines.append(str(r.get("text") or ""))
@@ -85,4 +96,3 @@ def render_summaries_md(uid: str, limit: int = 500) -> Path | None:
         return p
     except OSError:
         return None
-

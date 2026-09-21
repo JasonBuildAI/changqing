@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import sqlite3
 import threading
 import time
@@ -108,18 +109,38 @@ END;
 # 会被写进 facts 表的字段（op 里的同名字段直通）。
 # `persona_attention` 在前身里叫 `her_attention` —— 那个名字把「谁的视角」
 # 写死进了 schema，而画像是宿主注入的（见 `PersonaProfile`），所以改名。
-_FACT_FIELDS = ("subject", "predicate", "object", "valid_from", "valid_to",
-                "confidence", "importance", "persona_attention",
-                "pinned", "status", "source", "kind", "due", "turn_ref",
-                "quote", "last_used_at", "use_count")
+_FACT_FIELDS = (
+    "subject",
+    "predicate",
+    "object",
+    "valid_from",
+    "valid_to",
+    "confidence",
+    "importance",
+    "persona_attention",
+    "pinned",
+    "status",
+    "source",
+    "kind",
+    "due",
+    "turn_ref",
+    "quote",
+    "last_used_at",
+    "use_count",
+)
 
 # 缺省值必须在这里补，**不能指望建表时的 DEFAULT**：我们是把全部字段显式写进
 # INSERT 的，op 里没有的字段会写成 NULL，而 DEFAULT 只在「该列没出现在 INSERT 里」
 # 时才生效 —— status 变成 NULL 之后每一条事实都查不出来（`status='active'`
 # 匹配不上），而且不报任何错。
 _FACT_DEFAULTS: dict[str, Any] = {
-    "status": "active", "source": "extract", "pinned": 0, "use_count": 0,
-    "confidence": 0.0, "importance": 0.0, "persona_attention": 0.0,
+    "status": "active",
+    "source": "extract",
+    "pinned": 0,
+    "use_count": 0,
+    "confidence": 0.0,
+    "importance": 0.0,
+    "persona_attention": 0.0,
     "kind": "fact",
 }
 
@@ -216,8 +237,10 @@ def _meta_get(con: sqlite3.Connection, key: str, default: str = "") -> str:
 
 
 def _meta_set(con: sqlite3.Connection, key: str, value: str) -> None:
-    con.execute("INSERT INTO meta(k, v) VALUES(?, ?) "
-                "ON CONFLICT(k) DO UPDATE SET v=excluded.v", (key, value))
+    con.execute(
+        "INSERT INTO meta(k, v) VALUES(?, ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",
+        (key, value),
+    )
 
 
 def _write_fact(con: sqlite3.Connection, fid: str, fact: dict[str, Any]) -> None:
@@ -243,15 +266,15 @@ def _write_fact(con: sqlite3.Connection, fid: str, fact: dict[str, Any]) -> None
     con.execute(
         f"INSERT INTO facts ({', '.join(cols)}) VALUES ({marks}) "
         f"ON CONFLICT(id) DO UPDATE SET {updates}",
-        list(row.values()))
+        list(row.values()),
+    )
 
 
 def _invalidate(con: sqlite3.Connection, fid: str, day: str, reason: str) -> None:
     """失效而不是删除（双时间轴）：新事实让旧事实**不再被注入**，
     但「他以前说过什么」还查得到 —— 陪伴产品里，忘记比记错更容易被原谅，
     真正伤人的是「她矢口否认说过」。"""
-    con.execute("UPDATE facts SET status='superseded', valid_to=? WHERE id=?",
-                (day, fid))
+    con.execute("UPDATE facts SET status='superseded', valid_to=? WHERE id=?", (day, fid))
 
 
 def materialize(uid: str, *, force: bool = False) -> dict[str, Any]:
@@ -272,7 +295,7 @@ def materialize(uid: str, *, force: bool = False) -> dict[str, Any]:
         try:
             ops = read_ops(uid)
             applied = 0 if force else int(_meta_get(con, "applied_ops", "0") or 0)
-            if applied > len(ops):       # 日志被换过 / 截断过：重新来
+            if applied > len(ops):  # 日志被换过 / 截断过：重新来
                 applied = 0
             n = 0
             for op in ops[applied:]:
@@ -282,15 +305,18 @@ def materialize(uid: str, *, force: bool = False) -> dict[str, Any]:
                 con.execute("SAVEPOINT mat_op")
                 try:
                     apply_op(con, op)
-                except Exception as e:   # noqa: BLE001  一条坏 op 不该卡死整个用户
+                except Exception as e:  # noqa: BLE001  一条坏 op 不该卡死整个用户
                     con.execute("ROLLBACK TO mat_op")
-                    bad_ops.append({
-                        "id": str(op.get("id") or ""),
-                        "op": str(op.get("op") or ""),
-                        "error": f"{type(e).__name__}: {e}"})
+                    bad_ops.append(
+                        {
+                            "id": str(op.get("id") or ""),
+                            "op": str(op.get("op") or ""),
+                            "error": f"{type(e).__name__}: {e}",
+                        }
+                    )
                 else:
                     con.execute("RELEASE mat_op")
-                n += 1                   # 读过就算推进，下次不再撞同一条
+                n += 1  # 读过就算推进，下次不再撞同一条
             if n:
                 _meta_set(con, "applied_ops", str(len(ops)))
                 con.commit()
@@ -322,7 +348,7 @@ def wipe(uid: str) -> None:
             return
         try:
             con = open_index(uid)
-        except Exception:                    # noqa: BLE001  库都打不开 = 本来就是空的
+        except Exception:  # noqa: BLE001  库都打不开 = 本来就是空的
             return
         try:
             with con:
@@ -345,12 +371,10 @@ def rebuild(uid: str) -> int:
     with _lock(uid):
         p = index_path(uid)
         for suffix in ("", "-wal", "-shm"):
-            try:
+            with contextlib.suppress(OSError):
                 Path(str(p) + suffix).unlink()
-            except OSError:
-                pass
         with _SCHEMA_LOCK:
-            _SCHEMA_READY.discard(str(p))     # 文件没了，缓存也跟着失效
+            _SCHEMA_READY.discard(str(p))  # 文件没了，缓存也跟着失效
         con = open_index(uid)
         try:
             ops = read_ops(uid)

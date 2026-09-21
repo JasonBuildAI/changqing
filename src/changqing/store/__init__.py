@@ -23,44 +23,106 @@
 docstring —— 那里的说明不是考古，是「别把它挪回模块级」。
 """
 
-from .facts import (fact_stats, get_fact, list_facts, mark_used, pending_facts)
-from .index import (SCHEMA_VERSION, connect, ensure_schema, materialize,
-                    open_index, rebuild, wipe)
+from .facts import fact_stats, get_fact, list_facts, mark_used, pending_facts
+from .index import SCHEMA_VERSION, connect, ensure_schema, materialize, open_index, rebuild, wipe
 from .ops import append_op, apply_op, next_fact_id, read_ops
-from .paths import (_INDEX_FILE, _LOCKS, _LOCKS_GUARD, _LOG_FILE, _SESSIONS,
-                    _STATE_FILE, _load_state, _lock, _save_state, _state_path,
-                    day_path, facts_md_path, index_path, load_state, log_path,
-                    root_dir, safe_name, save_state, sessions_dir, summary_path,
-                    update_state, user_dir, watermark)
+from .paths import (
+    day_path,
+    facts_md_path,
+    index_path,
+    load_state,
+    log_path,
+    root_dir,
+    safe_name,
+    save_state,
+    sessions_dir,
+    summary_path,
+    update_state,
+    user_dir,
+    watermark,
+)
 from .render import enabled as render_enabled
 from .render import render_facts_md
 from .summaries import append_summary, list_summaries, render_summaries_md
-from .topics import (TOPIC_KINDS, append_topic, list_topics, mark_topics_used,
-                     render_topics_md, reset_topics, topic_stats, topics_path)
-from .turnlog import (append_turn, archive_old_turns, archive_stats,
-                      escape_text, read_turns, remember, reset_memory, stats,
-                      unescape_text)
+from .topics import (
+    TOPIC_KINDS,
+    append_topic,
+    list_topics,
+    mark_topics_used,
+    render_topics_md,
+    reset_topics,
+    topic_stats,
+    topics_path,
+)
+from .turnlog import (
+    append_turn,
+    archive_old_turns,
+    archive_stats,
+    escape_text,
+    read_turns,
+    remember,
+    reset_memory,
+    stats,
+    unescape_text,
+)
 
 __all__ = [
     # paths / state
-    "root_dir", "user_dir", "sessions_dir", "day_path", "safe_name",
-    "log_path", "index_path", "facts_md_path", "summary_path", "topics_path",
-    "load_state", "save_state", "update_state", "watermark",
+    "root_dir",
+    "user_dir",
+    "sessions_dir",
+    "day_path",
+    "safe_name",
+    "log_path",
+    "index_path",
+    "facts_md_path",
+    "summary_path",
+    "topics_path",
+    "load_state",
+    "save_state",
+    "update_state",
+    "watermark",
     # L0
-    "append_turn", "remember", "read_turns", "reset_memory", "stats",
-    "escape_text", "unescape_text", "archive_old_turns", "archive_stats",
+    "append_turn",
+    "remember",
+    "read_turns",
+    "reset_memory",
+    "stats",
+    "escape_text",
+    "unescape_text",
+    "archive_old_turns",
+    "archive_stats",
     # L1 日志与物化
-    "append_op", "read_ops", "apply_op", "next_fact_id",
-    "connect", "open_index", "ensure_schema", "materialize", "rebuild", "wipe",
+    "append_op",
+    "read_ops",
+    "apply_op",
+    "next_fact_id",
+    "connect",
+    "open_index",
+    "ensure_schema",
+    "materialize",
+    "rebuild",
+    "wipe",
     "SCHEMA_VERSION",
     # 事实
-    "list_facts", "pending_facts", "get_fact", "mark_used", "fact_stats",
+    "list_facts",
+    "pending_facts",
+    "get_fact",
+    "mark_used",
+    "fact_stats",
     # L2 纪要
-    "append_summary", "list_summaries", "render_summaries_md",
+    "append_summary",
+    "list_summaries",
+    "render_summaries_md",
     # 话题
-    "TOPIC_KINDS", "append_topic", "list_topics", "mark_topics_used",
-    "reset_topics", "topic_stats", "render_topics_md",
+    "TOPIC_KINDS",
+    "append_topic",
+    "list_topics",
+    "mark_topics_used",
+    "reset_topics",
+    "topic_stats",
+    "render_topics_md",
     # 渲染
-    "render_facts_md", "render_enabled",
+    "render_facts_md",
+    "render_enabled",
 ]
-

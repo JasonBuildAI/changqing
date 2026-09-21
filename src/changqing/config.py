@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Any
 
 # 环境变量前缀。所有配置项都挂在这个前缀下，避免和宿主的变量名打架。
 ENV_PREFIX = "CHANGQING_"
@@ -72,7 +73,7 @@ def _env_int(suffix: str, default: int) -> int:
     try:
         return int(_raw(suffix))
     except ValueError:
-        return default          # 写错一行不该让整个库起不来
+        return default  # 写错一行不该让整个库起不来
 
 
 def _env_float(suffix: str, default: float) -> float:
@@ -213,7 +214,6 @@ class MemoryConfig:
         finally:
             ENV_PREFIX = old
 
-    def evolved(self, **changes: object) -> MemoryConfig:
+    def evolved(self, **changes: Any) -> MemoryConfig:
         """改几个字段，返回**新的**一份（原配置不动）。"""
         return replace(self, **changes)
-

@@ -30,19 +30,27 @@ def enabled() -> bool:
 def render_facts_md(uid: str) -> Path | None:
     """把物化视图渲染成人类可读的 md。**只读产物**：手工改会被下次渲染覆盖，
     要改走编辑接口（由它追加一条操作）。"""
-    from .facts import list_facts     # 函数内 import：模块级会成环，见文件头说明
+    from .facts import list_facts  # 函数内 import：模块级会成环，见文件头说明
+
     facts = list_facts(uid)
     dead = list_facts(uid, include_dead=True, status="superseded")
-    lines = ["# 关于他的事实（渲染视图，只读）", "",
-             "> 这是从 log.jsonl 物化出来的视图，**不要手工编辑** —— 下次渲染会覆盖它。",
-             "> 要改走编辑接口，由接口往日志追加一条操作。", ""]
+    lines = [
+        "# 关于他的事实（渲染视图，只读）",
+        "",
+        "> 这是从 log.jsonl 物化出来的视图，**不要手工编辑** —— 下次渲染会覆盖它。",
+        "> 要改走编辑接口，由接口往日志追加一条操作。",
+        "",
+    ]
     if not facts:
         lines += ["（还没有事实。事实由后台整理从原话里抽出来。）", ""]
     for f in facts:
         head = f"{f['subject']}{f['predicate']}{f['object']}"
-        marks = [f"#{f['id']}", f["status"],
-                 f"重要 {float(f['importance'] or 0):.1f}",
-                 f"她会在意 {float(f['persona_attention'] or 0):.1f}"]
+        marks = [
+            f"#{f['id']}",
+            f["status"],
+            f"重要 {float(f['importance'] or 0):.1f}",
+            f"她会在意 {float(f['persona_attention'] or 0):.1f}",
+        ]
         if f["pinned"]:
             marks.append("已钉住")
         lines.append(f"## {head}  ({' · '.join(marks)})")
@@ -58,8 +66,10 @@ def render_facts_md(uid: str) -> Path | None:
     if dead:
         lines += ["## 已经失效的（不再是当前事实，但没删）", ""]
         for f in dead:
-            lines.append(f"- {f['id']} {f['subject']}{f['predicate']}{f['object']}"
-                         f" —— {f['valid_to'] or '?'} 起失效")
+            lines.append(
+                f"- {f['id']} {f['subject']}{f['predicate']}{f['object']}"
+                f" —— {f['valid_to'] or '?'} 起失效"
+            )
         lines.append("")
     p = facts_md_path(uid)
     try:
@@ -68,4 +78,3 @@ def render_facts_md(uid: str) -> Path | None:
         return p
     except OSError:
         return None
-

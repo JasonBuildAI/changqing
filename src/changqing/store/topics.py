@@ -27,7 +27,6 @@ from typing import Any
 
 from . import index
 from .ops import append_op
-from .paths import _lock
 
 # 主动开口的三种意图。它只用来让面板看得出「她当时打算干什么」，
 # 不参与任何检索与打分 —— 加新值不会有任何代码认得它。
@@ -42,12 +41,13 @@ def topics_path(uid: str) -> Path:
 
 def _topic_id(text: str, day: str) -> str:
     """id 由**内容**决定，跨进程也稳定（同 `_summary_id` 的理由）。"""
-    h = hashlib.sha1(f"{day}\n{text}".encode("utf-8")).hexdigest()[:10]
+    h = hashlib.sha1(f"{day}\n{text}".encode()).hexdigest()[:10]
     return f"TP-{(day or '').replace('-', '')}-{h}"
 
 
-def append_topic(uid: str, text: str, day: str, *, kind: str = "share",
-                 due_day: str = "", ref: str = "") -> str:
+def append_topic(
+    uid: str, text: str, day: str, *, kind: str = "share", due_day: str = "", ref: str = ""
+) -> str:
     """追加一条「她下次想主动提的事」。返回 id（空文本返回 ""）。
 
     去重靠 id：同一段对话整理两次，内容一样 → 同一条（`INSERT OR REPLACE`），
@@ -58,12 +58,21 @@ def append_topic(uid: str, text: str, day: str, *, kind: str = "share",
         return ""
     kind = str(kind or "share").strip().lower()
     if kind not in TOPIC_KINDS:
-        kind = "share"                 # 没认出的意图不丢条目，只退回中性那一档
+        kind = "share"  # 没认出的意图不丢条目，只退回中性那一档
     tid = _topic_id(text, day)
-    append_op(uid, {"op": "TOPIC", "id": tid, "day": day,
-                    "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                    "kind": kind, "text": text,
-                    "due_day": str(due_day or "")[:10], "ref": str(ref or "")})
+    append_op(
+        uid,
+        {
+            "op": "TOPIC",
+            "id": tid,
+            "day": day,
+            "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "kind": kind,
+            "text": text,
+            "due_day": str(due_day or "")[:10],
+            "ref": str(ref or ""),
+        },
+    )
     index.materialize(uid)
     render_topics_md(uid)
     return tid
@@ -82,9 +91,11 @@ def list_topics(uid: str, *, limit: int = 8, include_used: bool = False) -> list
         args: list[Any] = []
         if not include_used:
             sql += " WHERE COALESCE(used,0)=0"
-        sql += (" ORDER BY CASE WHEN COALESCE(due_day,'')='' THEN 1 ELSE 0 END ASC, "
-                "COALESCE(due_day,'9999') ASC, day DESC, created_at DESC, id ASC "
-                "LIMIT ?")
+        sql += (
+            " ORDER BY CASE WHEN COALESCE(due_day,'')='' THEN 1 ELSE 0 END ASC, "
+            "COALESCE(due_day,'9999') ASC, day DESC, created_at DESC, id ASC "
+            "LIMIT ?"
+        )
         args.append(max(1, int(limit)))
         return [dict(r) for r in con.execute(sql, args).fetchall()]
     finally:
@@ -98,8 +109,7 @@ def mark_topics_used(uid: str, topic_ids: list[str]) -> None:
         return
     con = index.open_index(uid)
     try:
-        con.executemany("UPDATE topics SET used=1 WHERE id=?",
-                        [(t,) for t in topic_ids])
+        con.executemany("UPDATE topics SET used=1 WHERE id=?", [(t,) for t in topic_ids])
         con.commit()
     finally:
         con.close()
@@ -129,7 +139,8 @@ def topic_stats(uid: str) -> dict[str, Any]:
         row = con.execute(
             "SELECT count(*) AS total, "
             "sum(CASE WHEN COALESCE(used,0)=0 THEN 1 ELSE 0 END) AS open "
-            "FROM topics").fetchone()
+            "FROM topics"
+        ).fetchone()
         return {"total": int(row["total"] or 0), "open": int(row["open"] or 0)}
     finally:
         con.close()
@@ -142,10 +153,13 @@ def render_topics_md(uid: str, limit: int = 200) -> str | None:
     渲染视图在这里不是装饰，是「她主动说的事有没有出处」的检查面板。
     """
     rows = list_topics(uid, limit=limit, include_used=True)
-    lines = ["# 她想主动提的事（渲染视图，只读）", "",
-             "> 这是从 log.jsonl 物化出来的视图，**不要手工编辑** —— 下次渲染会覆盖它。",
-             "> 它由后台整理顺手生成：不是她说过的话，也不是事实，是**她打算找你聊什么**。",
-             ""]
+    lines = [
+        "# 她想主动提的事（渲染视图，只读）",
+        "",
+        "> 这是从 log.jsonl 物化出来的视图，**不要手工编辑** —— 下次渲染会覆盖它。",
+        "> 它由后台整理顺手生成：不是她说过的话，也不是事实，是**她打算找你聊什么**。",
+        "",
+    ]
     if not rows:
         lines += ["（还没有话题。它随一次后台整理生成，也可能这次就没有值得提的事。）", ""]
     for r in rows:
@@ -163,4 +177,3 @@ def render_topics_md(uid: str, limit: int = 200) -> str | None:
         return str(p)
     except OSError:
         return None
-

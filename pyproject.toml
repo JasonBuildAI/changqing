@@ -73,10 +73,18 @@ src = ["src", "tests"]
 [tool.ruff.lint]
 # E/F = pycodestyle + pyflakes，I = import 排序，UP = pyupgrade，
 # B = bugbear，SIM = 可简化写法，RUF = ruff 自己的规则集。
-select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+select = ["E", "F", "I", "UP", "B", "BLE", "SIM", "RUF"]
 ignore = [
   # 中文注释与文档字符串行宽天然偏长，交给 line-length 而不是 E501 逐行判。
   "E501",
+  # RUF00x 是「易混字符」检查（把全角「，」当成英文逗号的形近字符）。本库
+  # 中文优先，文档字符串与注释里的全角标点是**正确写法**，不是笔误 ——
+  # 它该盯的是代码里的形近字符，这里没有代码用了全角标点。
+  "RUF001",
+  "RUF002",
+  "RUF003",
+  # 本库的 "__all__" 按层分组（L0 / L1 / …），分组本身是给人读的排序。
+  "RUF022",
 ]
 
 [tool.ruff.lint.per-file-ignores]

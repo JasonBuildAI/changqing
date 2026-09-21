@@ -16,7 +16,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Protocol, Sequence, runtime_checkable
+from collections.abc import Sequence
+from typing import Any, Protocol, runtime_checkable
 
 
 class LLMNotConfigured(RuntimeError):
@@ -96,7 +97,7 @@ class NullEmbedder:
         return None
 
     def warm(self) -> bool | None:
-        return None                 # None = 不需要预热（而不是预热失败）
+        return None  # None = 不需要预热（而不是预热失败）
 
     def loaded(self) -> bool:
         return False
@@ -130,4 +131,3 @@ class NullLLM:
             "Memory(config=..., llm=OpenAILLM(...))，"
             "或把 config.enabled 设为 False 关掉整个记忆系统。"
         )
-

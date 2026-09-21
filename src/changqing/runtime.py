@@ -18,12 +18,12 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Iterator
 
 from .config import MemoryConfig
-from .ports import Embedder, LLM, NullEmbedder, NoUsage, NullLLM, UsageSink
+from .ports import LLM, Embedder, NoUsage, NullEmbedder, NullLLM, UsageSink
 
 
 @dataclass
@@ -81,4 +81,3 @@ def using(rt: Runtime) -> Iterator[Runtime]:
 def reset() -> Runtime:
     """还原成出厂状态。测试之间清场用。"""
     return configure(MemoryConfig(), embedder=NullEmbedder(), llm=NullLLM(), usage=NoUsage())
-

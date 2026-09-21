@@ -131,4 +131,3 @@ class Stats(TypedDict, total=False):
     turns: int
     bytes: int
     watermark: dict[str, Any]
-
