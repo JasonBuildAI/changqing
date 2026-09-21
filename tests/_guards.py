@@ -1,10 +1,10 @@
-"""三条隐私 / 解耦护栏共用的扫描器。
+"""四条隐私 / 解耦 / 行尾护栏共用的扫描器。
 
 为什么放在一个模块里，而不是三份各写一遍：它们查的是**同一批文件**。
 「哪些目录算仓库、哪些文件算文本」如果各写一份，迟早有一份漏掉某个目录 ——
 于是那条护栏在悄悄放行，而它看起来完全正常（这正是它要防的那类缺陷）。
 
-**这套扫描器的值全在「它真的会失败吗」上。** 所以三条护栏各自都先证明自己
+**这套扫描器的值全在「它真的会失败吗」上。** 所以每条护栏都先证明自己
 认得违规样本（`test_the_detector_...`），再去扫仓库 —— 一条从不失败的护栏
 比没有护栏更糟：它让人以为这件事有人在管。
 """
@@ -55,12 +55,44 @@ SKIP_SUFFIXES = {
     ".db",
 }
 
+# 工具产物：名字本身就在说「这不是仓库内容」。
+#
+# 这份名单必须**按名字**匹配，不能并进后缀表：`.coverage` 的 `suffix` 是空串
+# （它整个就是一个没有扩展名的文件名），后缀表拦不住它。踩过一次：本地跑过
+# pytest-cov 之后根目录多出一个 `.coverage`，那是 SQLite 产物、里面天然带
+# `\r`，于是行尾护栏对着一个 git 根本不跟踪的文件变红。
+SKIP_NAMES = {".coverage", ".DS_Store", "Thumbs.db"}
+SKIP_NAME_PREFIXES = (".coverage.",)
+
 # 单文件上限：一个几兆的文件不是仓库内容，但它能让整套测试慢下来。
 MAX_BYTES = 2_000_000
 
 
 def _skipped(path: Path) -> bool:
+    if path.name in SKIP_NAMES or path.name.startswith(SKIP_NAME_PREFIXES):
+        return True
     return any(part in SKIP_DIRS or part.endswith(".egg-info") for part in path.parts)
+
+
+def iter_raw_files(*, only_suffix: str = "") -> Iterator[tuple[str, bytes]]:
+    """仓库里的文件，产出 `(相对路径, 原始字节)`。
+
+    要字节不要文本，是因为**行尾检查必须看原始字节**：`read_text` 会把
+    `\\r\\n` 归一成 `\\n`，于是「这份文件是 CRLF 的」这件事在读的那一刻就没了。
+    """
+    for path in sorted(REPO.rglob("*")):
+        if not path.is_file() or _skipped(path):
+            continue
+        if only_suffix and not path.name.endswith(only_suffix):
+            continue
+        if path.suffix.lower() in SKIP_SUFFIXES:
+            continue
+        try:
+            if path.stat().st_size > MAX_BYTES:
+                continue
+            yield path.relative_to(REPO).as_posix(), path.read_bytes()
+        except OSError:
+            continue
 
 
 def iter_text_files(*, only_suffix: str = "") -> Iterator[tuple[str, str]]:
@@ -69,18 +101,10 @@ def iter_text_files(*, only_suffix: str = "") -> Iterator[tuple[str, str]]:
     读不出文本的（二进制、编码不对）静默跳过 —— 这里不是「解析器」，
     是「扫一遍仓库」，为一条解码失败而整条护栏失败没有意义。
     """
-    for path in sorted(REPO.rglob("*")):
-        if not path.is_file() or _skipped(path):
-            continue
-        if only_suffix and path.suffix != only_suffix:
-            continue
-        if path.suffix.lower() in SKIP_SUFFIXES:
-            continue
+    for name, raw in iter_raw_files(only_suffix=only_suffix):
         try:
-            if path.stat().st_size > MAX_BYTES:
-                continue
-            yield path.relative_to(REPO).as_posix(), path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
+            yield name, raw.decode("utf-8")
+        except UnicodeDecodeError:
             continue
 
 
