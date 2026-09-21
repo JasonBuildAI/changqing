@@ -29,8 +29,8 @@ from typing import Any
 
 from .config import MemoryConfig
 from .runtime import runtime
-from .store import open_index
-from .tokens import estimate_tokens
+from .store import list_summaries, list_topics, open_index
+from .tokens import clip_to_tokens, estimate_tokens
 
 # 进程级的一次性开销先在这里付掉：jieba 建词典、numpy 首次 import 都在百毫秒级，
 # 而冷路径的预算是几十毫秒。不预热的话**第一次**冷路径检索会为了 import 顶爆预算、
@@ -303,3 +303,100 @@ def hot_facts(
     ordered = pinned + commits + rest
     picked, _ = _take_budget(ordered, budget)
     return picked
+
+
+def hot_summaries(
+    uid: str, *, k: int | None = None, budget_tokens: int | None = None
+) -> list[dict]:
+    """热路径的故事线：最近几场对话的小结，按 token 预算裁剪。
+
+    为什么只取**最近**的：故事线的价值在连续性（「上次你说……」），久远的具体事实
+    由事实层与冷路径负责。在这里再搭一套按语义检索纪要的索引，等于把「记得准不准、
+    能不能查」复制一遍 —— 而那套索引本来就该只服务事实层。
+
+    取数失败只是「这轮没有故事」，**绝不抛异常**：说话永远优先于记忆。
+    """
+    cfg = _cfg()
+    k = int(k if k is not None else cfg.story_k)
+    if k <= 0:
+        return []
+    budget = int(budget_tokens if budget_tokens is not None else cfg.story_tokens)
+    out: list[dict] = []
+    used = 0
+    try:
+        # 多取几条再裁：预算先到、条数先到，两种都要能停
+        for s in list_summaries(uid, limit=max(8, k * 4)):
+            text = str(s.get("text") or "").strip()
+            if not text:
+                continue
+            cost = estimate_tokens(text)
+            if out and used + cost > budget:
+                break
+            if not out and cost > budget:
+                # 单条就超预算：**截断**而不是豁免。纪要是散文，少说一句可以；
+                # 不截的话 story_tokens 就不是上界。
+                text = clip_to_tokens(text, budget)
+                if not text:
+                    break
+                cost = estimate_tokens(text)
+            out.append(
+                {
+                    "id": str(s.get("id") or ""),
+                    "day": str(s.get("day") or "")[:10],
+                    "text": text,
+                }
+            )
+            used += cost
+            if len(out) >= k:
+                break
+    except Exception:  # noqa: BLE001  取不到只是少一段故事
+        _note_error()
+        return []
+    return out
+
+
+def hot_topics(uid: str, *, k: int | None = None, budget_tokens: int | None = None) -> list[dict]:
+    """她下次主动开口时可以挑的话题（**只在主动开口那一轮读**）。
+
+    为什么不在普通回话时读：手里握一张「你可以问他这个」的清单，模型就会去执行它
+    —— 他刚说了一件事，她反问另一件。普通那一轮她该说的只有他刚说的那件。
+
+    口径与故事线一致：散文预算（超了**裁剪**而非豁免）。取数失败只是「这次没得挑」，
+    继续说话 —— 绝不抛异常。
+    """
+    cfg = _cfg()
+    k = int(k if k is not None else cfg.topic_k)
+    budget = int(budget_tokens if budget_tokens is not None else cfg.topic_tokens)
+    if k <= 0 or budget <= 0:
+        return []
+    out: list[dict] = []
+    used = 0
+    try:
+        for t in list_topics(uid, limit=max(4, k * 3)):
+            text = str(t.get("text") or "").strip()
+            if not text:
+                continue
+            cost = estimate_tokens(text)
+            if out and used + cost > budget:
+                break
+            if not out and cost > budget:
+                text = clip_to_tokens(text, budget)
+                if not text:
+                    break
+                cost = estimate_tokens(text)
+            out.append(
+                {
+                    "id": str(t.get("id") or ""),
+                    "day": str(t.get("day") or "")[:10],
+                    "due_day": str(t.get("due_day") or "")[:10],
+                    "kind": str(t.get("kind") or "share"),
+                    "text": text,
+                }
+            )
+            used += cost
+            if len(out) >= k:
+                break
+    except Exception:  # noqa: BLE001  没话题 = 少一个开场理由
+        _note_error()
+        return []
+    return out
