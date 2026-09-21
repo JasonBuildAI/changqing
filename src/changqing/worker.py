@@ -54,6 +54,7 @@ from .store import (
     materialize,
     mutate_state,
     read_turns,
+    root_dir,
     update_state,
 )
 from .tokenize import warm as warm_tokenizer
@@ -153,6 +154,11 @@ class MemoryWorker:
     # 上限是内存护栏，不是不变量。
     KNOWN_MAX = 2000
 
+    # 磁盘欠账扫描的目录清单缓存多久重建一次（秒）。清单本身不便宜
+    # （1 万用户 = 256 个前缀目录 + 1 万个 uid 目录），而**新用户不需要靠它进来**：
+    # 活跃的人由 `notify()` 直接覆盖，这个扫描只负责「早就该整理、却没人再来的」。
+    DISK_LIST_TTL = 600.0
+
     def __init__(self) -> None:
         self._q: queue.Queue = queue.Queue()
         self._thread: threading.Thread | None = None
@@ -163,6 +169,9 @@ class MemoryWorker:
         self._scan_at = 0  # 轮转游标（见 _sweep_idle）
         self._last: dict[str, Any] = {}  # uid -> 最近一次结果（自检与面板用）
         self._last_at: dict[str, float] = {}  # uid -> 那份结果的时刻（淘汰判据）
+        self._disk_at = 0  # 磁盘欠账的轮转游标（见 _sweep_disk）
+        self._disk_uids: list[str] = []  # 磁盘上的 uid 清单（带 TTL 缓存）
+        self._disk_listed_at = 0.0
 
     # ---------------------------------------------------------- 生命周期
     def start(self) -> None:
@@ -190,8 +199,8 @@ class MemoryWorker:
     # ---------------------------------------------------------- 主循环
     def _loop(self) -> None:
         # 分词器要在后台线程里也能用：它建词典要 0.7-1.6 秒，
-        # 不能在第一次整理时现付
-        # 分词器建词典失败只是「检索粗一点」，不该让整条后台线程起不来
+        # 不能在第一次整理时现付。建不起来只是「检索粗一点」，
+        # 不该让整条后台线程起不来。
         with contextlib.suppress(Exception):
             warm_tokenizer()
         while not self._stop.is_set():
@@ -263,6 +272,61 @@ class MemoryWorker:
             if self._stop.is_set():
                 return
             # 一个 uid 坏了不拖累别人：这一批是轮转的，下次还会轮到它
+            with contextlib.suppress(Exception):
+                self.maybe_extract(uid)
+
+    # ---------------------------------------------------------- 磁盘欠账
+    def _disk_uid_list(self) -> list[str]:
+        """磁盘上所有 uid 目录的清单（带 TTL 缓存，见 `DISK_LIST_TTL`）。
+
+        **只认带 `state.json` 的目录** —— 那是「这个 uid 真的聊过」的最小证据。
+        空目录（半途创建的桶、清理的残留）扫它只是白读一次盘。
+
+        坐标一律来自 `user_dir()` 的同一个权威定义（按 uid 前两位分桶的两级布局），
+        不在这里另写一份路径拼接：写第二份的后果是扫描**静默跑到别的库上**。
+        """
+        now = time.time()
+        if self._disk_uids and now - self._disk_listed_at < self.DISK_LIST_TTL:
+            return self._disk_uids
+        uids: list[str] = []
+        try:
+            root = root_dir()
+            if root.exists():
+                for bucket in root.iterdir():
+                    if not bucket.is_dir():
+                        continue
+                    for ud in bucket.iterdir():
+                        if ud.is_dir() and (ud / "state.json").exists():
+                            uids.append(ud.name)
+        except OSError:  # 盘上一时读不到：这一轮不扫，下次再来
+            return self._disk_uids
+        self._disk_uids = sorted(uids)
+        self._disk_listed_at = now
+        return self._disk_uids
+
+    def _sweep_disk(self) -> None:
+        """按批轮转扫磁盘上的 uid，把「早就该整理却没人再来」的欠账补上。
+
+        **为什么必须有它**：整理的三条触发条件里，b（满 max_turns 轮）与
+        c（下次活跃时扫 watermark）都要**用户再来**才成立，而「用户直接关页面」
+        恰恰是最常见的结束方式 —— 那一段对话就永远停在 L0，一次也不会被想起。
+        `_known` 帮不上：它只装**本进程见过**的 uid，重启就空了。
+
+        每批 `SCAN_BATCH` 个，游标往后走（固定看前一批的话排在后面的人永远轮不到，
+        与 `_sweep_idle` 同一条教训）。判据仍然是 `maybe_extract` → `should_run`：
+        不无脑抽，没欠账的 uid 一次模型调用都不会花。
+        """
+        if not _cfg().enabled:
+            return
+        uids = self._disk_uid_list()
+        if not uids:
+            return
+        start = self._disk_at % len(uids)
+        batch = uids[start : start + self.SCAN_BATCH]
+        self._disk_at = start + len(batch)
+        for uid in batch:
+            if self._stop.is_set():
+                return
             with contextlib.suppress(Exception):
                 self.maybe_extract(uid)
 

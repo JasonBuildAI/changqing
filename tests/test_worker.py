@@ -359,3 +359,67 @@ def test_evict_stale_gives_up_instead_of_dropping_active_uids(rt: Runtime):
 
 def test_chunk_turns_is_the_documented_default():
     assert CHUNK_TURNS == 40
+
+
+# ---------------------------------------------------------------- 磁盘欠账
+def test_disk_sweep_finds_conversations_nobody_came_back_to(rt: Runtime):
+    """三条触发条件里有一条半都要「用户再来」，而关页面才是最常见的结束方式。
+
+    没有这一条路，那段对话就永远停在 L0 —— 一次也不会被想起。
+    """
+    w = MemoryWorker()
+    assert w._disk_uid_list() == [], "还没人聊过"
+
+    for uid in ("u" + "1" * 16, "u" + "2" * 16):
+        say(uid, "我家猫叫团子")
+    got = w._disk_uid_list()
+    assert got == sorted(["u" + "1" * 16, "u" + "2" * 16]), "只认真的聊过的目录"
+
+
+def test_disk_sweep_skips_directories_without_state(rt: Runtime, mem_root):
+    """`state.json` 是「这个 uid 真的聊过」的最小证据。
+
+    空目录（半途创建的桶、清理的残留）扫它只是白读一次盘 —— 而上万用户的
+    目录清单正是这条路上最贵的一次 IO。
+    """
+    w = MemoryWorker()
+    say(UID, "在吗")
+    stray = mem_root / "z9" / ("u" + "z" * 16)
+    stray.mkdir(parents=True)
+    assert w._disk_uid_list() == [UID], "空目录不算聊过"
+
+
+def test_disk_sweep_rotates_so_everyone_gets_a_turn(rt: Runtime):
+    """固定看前一批的话排在后面的人永远轮不到 —— 与静默扫描同一条教训。"""
+    w = MemoryWorker()
+    w.SCAN_BATCH = 2
+    for i in range(5):
+        say(f"u{i:016d}", f"第{i}句")
+    assert len(w._disk_uid_list()) == 5
+    seen: list = []
+    w.maybe_extract = lambda uid, **kw: seen.append(uid)  # 只关心「轮到谁」
+    for _ in range(3):
+        w._sweep_disk()
+    assert len(set(seen)) == 5, "三轮下来五个 uid 都轮到了"
+
+
+def test_disk_sweep_is_a_noop_when_the_whole_system_is_off(rt: Runtime):
+    """关掉记忆系统时连目录都不该列 —— 空转的 IO 也是成本。"""
+    say(UID, "我家猫叫团子")
+    w = MemoryWorker()
+    w._disk_uids = []  # 清掉缓存，逼它真去列目录
+    w._disk_listed_at = 0.0
+    with using(Runtime(config=rt.config.evolved(enabled=False))):
+        w._sweep_disk()
+    assert w._disk_uids == [], "一次目录都没列"
+
+
+def test_disk_uid_list_is_cached(rt: Runtime, monkeypatch: pytest.MonkeyPatch):
+    """清单要 1 万条目录 + 1 万个 uid 目录，不能每轮空转都重列一遍。"""
+    say(UID, "在吗")
+    w = MemoryWorker()
+    assert w._disk_uid_list() == [UID]
+    say("u" + "c" * 16, "新的人")
+    assert w._disk_uid_list() == [UID], "TTL 内用缓存"
+    w._disk_listed_at = 0.0  # 假装 TTL 过期
+    assert len(w._disk_uid_list()) == 2, "过期后重新列，新人进来了"
