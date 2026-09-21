@@ -32,6 +32,7 @@ from .paths import (
     index_path,
     load_state,
     log_path,
+    mutate_state,
     root_dir,
     safe_name,
     save_state,
@@ -81,6 +82,7 @@ __all__ = [
     "load_state",
     "save_state",
     "update_state",
+    "mutate_state",
     "watermark",
     # L0
     "append_turn",

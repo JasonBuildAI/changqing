@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -109,10 +110,24 @@ def update_state(uid: str, **changes: Any) -> dict[str, Any]:
     为什么不能「先 load 再 save」：整理线程手上那份快照中间隔着几百毫秒的活
     （模型调用），期间前台可能已经推了几轮原话上去。直接 `save_state` 会把
     前台这期间的写入盖掉 —— 症状是「她偶尔丢掉刚说过的一轮」，不报错。
+
+    改的是**顶层**键。要合并嵌套字段（`watermark` 那种）走 `mutate_state`。
+    """
+    return mutate_state(uid, lambda st: st.update(changes))
+
+
+def mutate_state(uid: str, fn: Callable[[dict[str, Any]], Any]) -> dict[str, Any]:
+    """把**整个改动**放进同一把锁里：锁内读、`fn` 改、锁内写。
+
+    为什么需要它，而不只是 `update_state(**changes)`：有些字段是嵌套的
+    （`watermark` 是一个小字典，上面挂着 `last_ts` 与 `extracted_upto`）。
+    写它必须基于**锁内读到的那一份**做合并 —— 在锁外先把 watermark 读出来、
+    算好整个新字典再写回，中间夹着的那些前台写入（每轮都在更新的 `last_ts`）
+    会被静静盖掉，而症状只是「静默整理的时机偶尔不对」，不报错。
     """
     with _lock(uid):
         st = _load_state(uid)
-        st.update(changes)
+        fn(st)
         _save_state(uid, st)
         return st
 
