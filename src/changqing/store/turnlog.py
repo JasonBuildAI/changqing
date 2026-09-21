@@ -1,10 +1,14 @@
-"""对话流水（L0 原话）：单行化、追加、读回。
+"""对话流水（L0 原话）：单行化、追加、读回、超期归档。
 
 `sessions/YYYY-MM-DD.md` 是**唯一不可再生**的那一层：用户真的说过的话。
 它的全部关注点是「单行完整 + 崩溃只丢尾行」，所以这套追加语义值得单独一个文件。
 
 轮次 id（`T-000001`）全局递增、**永不复用** —— 它是事实回引（`turn_ref`）的锚点。
 先占号再写盘：崩溃最多浪费一个号，绝不会重号。
+
+「归档」也在这个文件里，因为它改的是同一份文件（`sessions/*.md`）。
+但方向和 `reset` 相反：`archive_old_turns` **一个字节都不删**，超期只是搬进
+gzip 包，`read_turns` 透明读回两处。
 """
 
 from __future__ import annotations
@@ -12,6 +16,8 @@ from __future__ import annotations
 import os
 import re
 import time
+import gzip
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +29,12 @@ _TURN_RE = re.compile(r"^- (T-\d{6,}) (\d{2}:\d{2}:\d{2}) (user|assistant) (.*)$
 # 只有长得像 `YYYY-MM-DD` 的才当 L0 的一天：备份、手写笔记混进 `sessions/` 时
 # 不该被当成「某个月的原话」处理。
 _DAY_FILE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+# 归档目录的名字与后缀。后缀是常量而不是字面量：`Path.stem` 只剥一层，
+# `2026-01-05.md.gz` 的 stem 是 `2026-01-05.md` —— 那个坑在 `_day_sources`
+# 与 `archive_old_turns` 两处都要躲开。
+_ARCHIVE_NAME = "sessions.archive"
+_GZ_SUFFIX = ".md.gz"
 
 
 # ---------------------------------------------------------------- 单行化
@@ -203,30 +215,202 @@ def _turn_rows(day: str, text: str) -> list[dict[str, Any]]:
 
 
 def _day_sources(uid: str) -> list[tuple[str, Path]]:
-    """这个 uid 的每一天各自住在哪个文件。返回**按天排好序**的 `(day, path)`。"""
+    """这个 uid 的每一天各自住在哪：`sessions/YYYY-MM-DD.md` 还是归档包。
+
+    返回**按天排好序**的 `(day, path)`。排序必须在合并两处**之后**做：
+    各排各的再拼，归档过的那几天会整段跑到别的天前面，读回来的顺序就与归档前
+    不一样了 —— 而顺序正是这条改动的核心护栏。
+
+    同一天两处都有时用 `sessions/` 里那份（它是只追加的那份权威，归档只是副本；
+    归档器只有在逐字节确认同源之后才会删掉 live 那份）。
+    """
     live = sessions_dir(uid)
+    arch = _archive_dir(uid)
     found: dict[str, Path] = {}
     for p in (sorted(live.glob("*.md")) if live.is_dir() else []):
         if _DAY_FILE_RE.match(p.stem):
             found[p.stem] = p
+    for p in (sorted(arch.glob("*" + _GZ_SUFFIX)) if arch.is_dir() else []):
+        # 不能写 `p.stem`：`2026-01-05.md.gz` 的 stem 是 `2026-01-05.md`
+        # （只剥一层后缀），拿去当「天」用会让 day 字段凭空多一个 `.md`。
+        found.setdefault(p.name[:-len(_GZ_SUFFIX)], p)
     return [(d, found[d]) for d in sorted(found)]
 
 
 def read_turns(uid: str, day: str | None = None) -> list[dict[str, Any]]:
-    """按顺序读回 L0。`day` 为空则读全部。
+    """按顺序读回 L0，**归档过的月份透明读回**。`day` 为空则读全部。
 
     解析时**丢掉尾部不完整的那一行**：进程被杀在 write 中间时文件末尾会留下
     半条记录，直接抛异常会让整个记忆层打不开。「追加 + 单行完整」换来的容错，
     不需要 replace 那种重量级方案。
+
+    调用方看不到归档这件事：两处的天在合并之后统一排序、统一解析，
+    归档前后逐条一致。
     """
     out: list[dict[str, Any]] = []
     for dd, p in _day_sources(uid):
         if day and dd != day:
             continue
         try:
-            text = p.read_text(encoding="utf-8", errors="replace")
-        except OSError:
+            if p.name.endswith(_GZ_SUFFIX):
+                with gzip.open(p, "rt", encoding="utf-8", errors="replace") as f:
+                    text = f.read()
+            else:
+                text = p.read_text(encoding="utf-8", errors="replace")
+        except (OSError, EOFError):
             # 读不动就当这一天读不到：一天读不出来不该让整份记忆打不开。
             continue
         out.extend(_turn_rows(dd, text))
     return out
+
+
+# ---------------------------------------------------------------- 归档
+def _archive_dir(uid: str) -> Path:
+    """归档目录：`sessions/` 的**同级兄弟**，不是它的子目录。
+
+    同级是为了让 `sessions/*.md` 这一族 glob（统计、运维台的按天清单）不会被
+    归档包混进来 —— 塞进子目录也能躲开 glob，但那样「这个人在盘上占多少」
+    要在两棵子树里数。
+    """
+    return sessions_dir(uid).with_name(_ARCHIVE_NAME)
+
+
+def _cutoff_month(months: int, *, now: float | None = None) -> str:
+    """保留期里**最早的那个月**（`YYYY-MM`）：比它更早的月份全是超期。
+
+    为什么截止点落在「某个月的 1 号」很要紧：判据因此简化成一次字符串比较，
+    **不用看那天是几号** —— 月内切割（只搬月初那几天）得重写文件里的行，
+    而 L0 的语义是「只追加、不可再生」：重写一次，崩溃时丢的就不再是尾行
+    而是中段。
+
+    `months` 数法：从当月往前数 `months` 个月、**当月算第 1 个**
+    （`retain_months=24` = 当月 + 前 23 个月，正好 24 个月）。
+    """
+    t = time.localtime(time.time() if now is None else now)
+    total = t.tm_year * 12 + (t.tm_mon - 1) - (int(months) - 1)
+    return f"{total // 12:04d}-{total % 12 + 1:02d}"
+
+
+def _same_bytes(src: Path, gz: Path) -> bool:
+    """`sessions/` 里那份与归档包里那份是不是**同一批字节**。
+
+    只有确认同源才敢删 live 那份。坏掉 / 被截断的 `.gz` 一律判「不同源」：
+    判错的方向必须是「留着原话」，不是「删了它」。
+    """
+    try:
+        return gzip.decompress(gz.read_bytes()) == src.read_bytes()
+    except (OSError, EOFError):
+        return False
+
+
+def _unlink_quiet(p: Path) -> None:
+    """删不掉就算了（临时文件残留不致命，原话才致命）。"""
+    try:
+        p.unlink()
+    except OSError:
+        pass
+
+
+def archive_old_turns(uid: str, *, months: int | None = None) -> dict[str, Any]:
+    """把**整月**都早于保留期的 L0 原话搬进 `sessions.archive/*.md.gz`。
+
+    **这是归档不是删除**：原话一个字节都没少，只是换个 `.gz` 待着，
+    `read_turns` 透明读回两处。真正的删除只有用户主动发起的那两条路。
+
+    **按整月判、不在月内切**：只要这个月整体早于截止月，就搬走这个月的每一天。
+    `months <= 0` = 永不清理、直接返回。
+
+    **无损 + 幂等**靠三件事：
+
+      1. 先把内容写进临时文件、再 `os.replace` 到 `.gz`（同目录内 = 原子），
+         **最后**才 `unlink` 原 `.md`：崩在任何一步都只会「留下没搬完的」，
+         绝不会先删后写；
+      2. `.gz` 已经在的那一天不重复搬运 —— 只有逐字节确认两边同源
+         （= 崩在 replace 与 unlink 之间）才补完最后那一步；
+      3. gzip 的 `mtime=0`：同一份内容两次归档得到同一批字节。
+
+    返回可观测的统计而不是 None —— 「今天到底搬没搬」要看得到。
+    """
+    out: dict[str, Any] = {"files": 0, "bytes": 0, "months": [], "cutoff": "",
+                           "skipped": 0, "finished": 0, "errors": []}
+    if months is None:
+        months = runtime().config.retain_months
+    try:
+        months = int(months)
+    except (TypeError, ValueError):
+        return out                        # 配置写坏了按「关掉」处理，不动盘
+    if months <= 0:
+        return out                        # 永不清理
+    out["cutoff"] = cutoff = _cutoff_month(months)
+
+    moved: list[str] = []
+    with _lock(uid):
+        d = sessions_dir(uid)
+        if not d.is_dir():
+            return out
+        try:
+            files = sorted(p for p in d.glob("*.md") if _DAY_FILE_RE.match(p.stem))
+        except OSError:
+            return out
+        for p in files:
+            month = p.stem[:7]
+            if month >= cutoff:
+                continue                  # 整月还在保留期里：这一个月一天都不动
+            target = _archive_dir(uid) / f"{p.name}.gz"
+            raw = b""
+            try:
+                if target.exists():
+                    if _same_bytes(p, target):
+                        p.unlink()        # 同源：崩在半路，补完最后那一步
+                        out["finished"] += 1
+                    else:
+                        # 不同源 = 归档之后又有人往这一天写过（时间戳回拨）。
+                        # 判断不了该信哪一份时**两边都留着** —— 原话不许丢。
+                        out["skipped"] += 1
+                    continue
+                raw = p.read_bytes()
+                target.parent.mkdir(parents=True, exist_ok=True)
+                # 临时文件名带 pid 与线程 id：固定名会让两个写者互相搬走对方
+                # 正在写的文件。
+                tmp = target.with_name(
+                    f"{target.name}.{os.getpid()}-{threading.get_ident()}.tmp")
+                try:
+                    tmp.write_bytes(gzip.compress(raw, mtime=0))
+                    os.replace(tmp, target)
+                except OSError:
+                    _unlink_quiet(tmp)
+                    raise
+                p.unlink()                # **只有 .gz 落好之后**才删原话
+            except OSError as e:
+                # 一个文件搬不动不拖累其余月份（Windows 上句柄占着是常态），
+                # 但要如实报出来：静默 = 看不出「这几天一直没归档」。
+                out["errors"].append({"day": p.stem, "error": str(e)})
+                continue
+            out["files"] += 1
+            out["bytes"] += len(raw)
+            moved.append(month)
+    out["months"] = sorted(set(moved))
+    return out
+
+
+def archive_stats(uid: str) -> dict[str, Any]:
+    """归档包的小结：`{"files": n, "bytes": n}`。
+
+    `bytes` 是 `.gz` 在盘上占的字节（**压缩后**，回答「占多少盘」），而
+    `archive_old_turns` 返回的 `bytes` 是搬走前原话的字节数（压缩前，回答
+    「搬走了多少原话」）—— 两个数各有各的用处，别混着比。
+
+    **只 stat，不读内容**：它跑在面板的自动刷新路径上。没归档过的用户返回
+    两个 0，不建目录。
+    """
+    files = 0
+    size = 0
+    d = _archive_dir(uid)
+    if d.is_dir():
+        for p in d.glob("*" + _GZ_SUFFIX):
+            try:
+                size += p.stat().st_size
+                files += 1
+            except OSError:
+                pass
+    return {"files": files, "bytes": size}
