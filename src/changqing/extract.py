@@ -26,7 +26,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Sequence
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 from .persona import PersonaProfile
 from .runtime import runtime
@@ -377,3 +377,94 @@ def verify(fact: dict, turns_by_id: dict[str, dict], tolerance: float = 0.0) -> 
     if score >= tol:
         return "pending", round(score, 3)  # 近似：待确认，**不丢**
     return "drop", round(score, 3)
+
+
+# ---------------------------------------------------------------- 清洗
+_RANGES = {"confidence": (0.0, 1.0), "importance": (0.0, 1.0), "persona_attention": (0.0, 1.0)}
+
+
+def clean_fact(fact: dict, turn: dict, persona: PersonaProfile | None = None) -> dict | None:
+    """把一条原始抽取结果变成可以落盘的事实。缺关键字段就返回 None。
+
+    `persona` 决定承诺类事实的 `subject`（默认取运行期里那份画像）。
+    """
+    kind = str(fact.get("kind") or "fact").strip().lower()
+    if kind not in ("fact", "commitment", "promise"):
+        kind = "fact"
+    # kind=promise（她答应的事）的 subject 统一成画像的称呼：它决定卡片的归属文案，
+    # 是**形状**而不是自由内容，不该交给模型发挥 —— 模型把 subject 写成「他」的话，
+    # 她会拿自己的承诺说成「你上次说……」，编出根本不存在的对话。
+    who = (persona if persona is not None else runtime().persona).promise_subject
+    subject = str(fact.get("subject") or (who if kind == "promise" else "他")).strip()[:40]
+    if kind == "promise":
+        subject = who
+    predicate = str(fact.get("predicate") or "").strip()[:80]
+    obj = str(fact.get("object") or "").strip()[:200]
+    # **object 允许为空。** 中文里「怕黑」「我妈身体不好」这类事实根本没有宾语，
+    # 模型会把内容整段写进 predicate。这里要求 object 非空的话，它们会被判成无效
+    # **静默丢弃** —— 而丢一条的表现只是「她忘了」，不报错、不进任何指标。
+    # 判据改成「合起来得有点内容」，两边都空的仍然是垃圾。
+    if len(predicate) + len(obj) < 2:
+        return None
+    day = str(turn.get("day") or "")[:10] or date.today().isoformat()
+    return {
+        "subject": subject,
+        "predicate": predicate,
+        # 闸 4：事实内容里的相对时间词换成绝对日期（基准是那一轮的时间戳）
+        "object": absolutize(obj, day),
+        "kind": kind,
+        "due": _norm_due(fact.get("due"), day),
+        "turn_ref": str(turn.get("id") or ""),
+        # quote 保持**一字不改** —— 它是回引校验的证据，改过就不叫证据了。
+        # 所以 absolutize 只作用在 object 上，不动 quote。
+        "quote": str(fact.get("quote") or "")[:300],
+        "confidence": _num(fact.get("confidence"), 0, 1, 0.7),
+        "importance": _num(fact.get("importance"), 0, 1, 0.5),
+        "persona_attention": _num(fact.get("persona_attention"), 0, 1, 0.5),
+        "valid_from": day,
+        "source": "extract",
+    }
+
+
+# ---------------------------------------------------------------- 冲突消解
+def resolve_ops(uid: str, facts: Sequence[dict]) -> tuple[list[dict], dict[str, int]]:
+    """同槽位（subject + predicate）的冲突消解 → 要追加的操作。
+
+    三种结局（外加一种「不改」）：
+
+      ADD        槽位是空的 → 新增
+      SUPERSEDE  同槽位已有别的值（「我换工作了」）→ 新事实入，**旧事实失效而不是删除**
+                 （双时间轴）。长期相处里忘记比记错更容易被原谅，但真正伤人的是
+                 「她矢口否认说过」
+      NOOP       同槽位、同值 → 什么都不做。**这就是幂等的落点**：同一段原话整理两次，
+                 第二次全是 NOOP，状态一模一样
+
+    NOOP 只出现在返回的统计里、**不写进日志** —— 日志是状态，不是决策流水；
+    把「这次什么都没发生」也记下来的话，重复整理会让日志无限膨胀。
+    """
+    from . import store as ST
+
+    stats = {"ADD": 0, "SUPERSEDE": 0, "NOOP": 0}
+    ops: list[dict] = []
+    existing: dict[tuple[str, str], list[dict]] = {}
+    for f in ST.list_facts(uid):
+        existing.setdefault((f["subject"], f["predicate"]), []).append(f)
+
+    for f in facts:
+        key = (f["subject"], f["predicate"])
+        cands = existing.get(key) or []
+        if any(c["object"] == f["object"] for c in cands):
+            stats["NOOP"] += 1
+            continue
+        fid = ST.next_fact_id(uid)
+        payload = dict(f)
+        if cands:
+            op = dict(payload, op="SUPERSEDE", id=fid, replaces=cands[0]["id"])
+            stats["SUPERSEDE"] += 1
+        else:
+            op = dict(payload, op="ADD", id=fid)
+            stats["ADD"] += 1
+        ops.append(op)
+        # 同一次整理里出现第二条同槽位事实时，它要取代的是刚写下的这条
+        existing[key] = [dict(payload, id=fid)]
+    return ops, stats
