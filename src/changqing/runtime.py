@@ -1,10 +1,10 @@
-"""进程级的运行期装配：配置 + 三个注入的能力。
+"""进程级的运行期装配：配置、画像与三个注入的能力。
 
 **为什么是进程级的一份，而不是每个函数一个参数。**
 
 存储层与检索层有上百处要读配置（根目录、预算、阈值）。一条路是把配置顺着
 参数一层层传下去，代价是改几百个调用点与全部测试；另一条路是模块级常量，
-代价就是宿主踩过的那个坑 —— 导入时拷贝，之后改不动、也不报错。
+代价就是「导入时拷贝，之后改不动、也不报错」那个坑。
 
 这里取第三条：一个**显式的、可替换的**进程级对象，子模块每次用的时候现取
 （`runtime()`），而不是在导入时把值拷走。测试用 `using()` 换一份，作用域结束
@@ -23,14 +23,16 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 
 from .config import MemoryConfig
+from .persona import NEUTRAL, PersonaProfile
 from .ports import LLM, Embedder, NoUsage, NullEmbedder, NullLLM, UsageSink
 
 
 @dataclass
 class Runtime:
-    """当前生效的配置与外部能力。"""
+    """当前生效的配置、画像与外部能力。"""
 
     config: MemoryConfig = field(default_factory=MemoryConfig)
+    persona: PersonaProfile = field(default_factory=lambda: NEUTRAL)
     embedder: Embedder = field(default_factory=NullEmbedder)
     llm: LLM = field(default_factory=NullLLM)
     usage: UsageSink = field(default_factory=NoUsage)
@@ -48,6 +50,7 @@ def runtime() -> Runtime:
 def configure(
     config: MemoryConfig | None = None,
     *,
+    persona: PersonaProfile | None = None,
     embedder: Embedder | None = None,
     llm: LLM | None = None,
     usage: UsageSink | None = None,
@@ -57,6 +60,7 @@ def configure(
     with _LOCK:
         _ACTIVE = Runtime(
             config=config if config is not None else _ACTIVE.config,
+            persona=persona if persona is not None else _ACTIVE.persona,
             embedder=embedder if embedder is not None else _ACTIVE.embedder,
             llm=llm if llm is not None else _ACTIVE.llm,
             usage=usage if usage is not None else _ACTIVE.usage,
@@ -80,4 +84,10 @@ def using(rt: Runtime) -> Iterator[Runtime]:
 
 def reset() -> Runtime:
     """还原成出厂状态。测试之间清场用。"""
-    return configure(MemoryConfig(), embedder=NullEmbedder(), llm=NullLLM(), usage=NoUsage())
+    return configure(
+        MemoryConfig(),
+        persona=NEUTRAL,
+        embedder=NullEmbedder(),
+        llm=NullLLM(),
+        usage=NoUsage(),
+    )
