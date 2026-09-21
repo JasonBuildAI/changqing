@@ -1,0 +1,28 @@
+changqing
+Copyright 2026 JasonBuildAI
+
+This product includes software developed as part of the changqing project
+(https://github.com/JasonBuildAI/changqing).
+
+Licensed under the Apache License, Version 2.0. You may obtain a copy of the
+License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+
+Design influences
+-----------------
+
+The architecture of changqing was informed by publicly documented ideas from
+other memory systems. No source code from those projects is included here, and
+the core package requires no third-party runtime dependency.
+
+    mem0                     https://github.com/mem0ai/mem0
+    Zep / Graphiti           https://github.com/getzep/graphiti
+    TencentDB-Agent-Memory   https://github.com/Tencent/TencentDB-Agent-Memory
+    MemOS                    https://github.com/MemTensor/MemOS
+
+Only mechanisms and concepts were studied; every implementation in this
+repository was written independently. See docs/comparison.md for the rationale
+and for the boundary we deliberately keep: we borrow mechanisms, we do not take
+on a service-oriented dependency.
