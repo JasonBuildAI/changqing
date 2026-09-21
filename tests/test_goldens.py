@@ -50,7 +50,9 @@ def test_pure_functions_reproduce_the_golden(golden: dict, rt: Runtime) -> None:
     assert retrieve.card_text(fx["fact"]) == ex["card_text"], "卡片文本变了"
     assert [estimate_tokens(t) for t in fx["corpus"]] == ex["estimate_tokens"], "token 估算变了"
     assert [extract.absolutize(t, DAY) for t in fx["corpus"]] == ex["absolutize"], "时间绝对化变了"
-    assert [[escape_text(t), unescape_text(escape_text(t))] for t in fx["corpus"]] == ex["escape"], "转义往返变了"
+    assert [[escape_text(t), unescape_text(escape_text(t))] for t in fx["corpus"]] == ex[
+        "escape"
+    ], "转义往返变了"
     assert [extract.parse_facts(r) for r in fx["raws"]] == ex["parse_facts"], "抽取结果解析变了"
     assert [extract.parse_summary(r) for r in fx["raws"]] == ex["parse_summary"], "纪要解析变了"
     assert [extract.parse_topics(r, DAY) for r in fx["raws"]] == ex["parse_topics"], "话题解析变了"
@@ -80,11 +82,13 @@ def test_recall_and_views_reproduce_the_golden(golden: dict, rt: Runtime) -> Non
     for op in fx["ops"]:
         append_op(uid, dict(op))
     materialize(uid)
-    assert {q: [f["id"] for f in retrieve.search(uid, q)] for q in fx["queries"]} == ex["recall"], "检索顺序变了"
+    assert {q: [f["id"] for f in retrieve.search(uid, q)] for q in fx["queries"]} == ex["recall"], (
+        "检索顺序变了"
+    )
     assert [f["id"] for f in retrieve.hot_facts(uid)] == ex["hot"], "热素材顺序变了"
-    assert [
-        [f["id"], f["status"], f["pinned"]] for f in list_facts(uid, include_dead=True)
-    ] == ex["facts"], "事实集合或状态变了"
+    assert [[f["id"], f["status"], f["pinned"]] for f in list_facts(uid, include_dead=True)] == ex[
+        "facts"
+    ], "事实集合或状态变了"
     path = render_facts_md(uid)
     assert path is not None, "渲染视图没落盘"
     assert path.read_text(encoding="utf-8") == ex["render"], "渲染视图的文本变了"
