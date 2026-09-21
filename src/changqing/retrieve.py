@@ -22,14 +22,18 @@
 
 from __future__ import annotations
 
+import array
+import math
 import time
 import traceback
 from collections.abc import Sequence
+from operator import mul
 from typing import Any
 
 from .config import MemoryConfig
 from .runtime import runtime
-from .store import list_summaries, list_topics, open_index
+from .store import list_summaries, list_topics, mark_used, open_index
+from .tokenize import to_query, tokenize
 from .tokens import clip_to_tokens, estimate_tokens
 
 # 进程级的一次性开销先在这里付掉：jieba 建词典、numpy 首次 import 都在百毫秒级，
@@ -400,3 +404,339 @@ def hot_topics(uid: str, *, k: int | None = None, budget_tokens: int | None = No
         _note_error()
         return []
     return out
+
+
+# ---------------------------------------------------------------- 冷路径
+# 取数形状：**先三路召回拿 id，再按 id 取行**。每一步都有界：
+#   三路召回各自带 LIMIT → 候选 id 是个几百个的量级 → `WHERE id IN (...)` 只取这几行。
+# 旧形状是把全部活跃事实取回来、在 Python 侧逐行建对象、全量打分，最后才按预算截断
+# —— 那是「截断」不是「省活」。
+# 钉住的那批单独并一条 `pinned=1`（有界）：它是**用户显式**表达的意图，三路召回
+# 一条都没撞上时也必须进。
+PIN_FETCH_MAX = 64
+# `IN (...)` 的分批大小：SQLite 的变量上限（编译期 SQLITE_MAX_VARIABLE_NUMBER）
+# 默认是 999，取 400 留足余量。
+_ID_BATCH = 400
+
+_LIVE_PROBE_SQL = (
+    "SELECT 1 FROM facts WHERE status='active' AND (valid_to IS NULL OR valid_to='') LIMIT 1"
+)
+
+
+def _any_live_fact(con) -> bool:
+    """这个库里到底有没有**活跃事实**（在同一把连接上问）。
+
+    它必须与「本轮有没有候选」分开：`no_fact` 的含义是「她库里一条活跃事实都没有」，
+    那是**真的没料**；而「有事实、这一问一条都没召回」是另一件事（`no_hit`）。
+    混成一个的话，运营者会拿「没命中」去查「她是不是失忆了」—— 两件事的处置完全相反。
+    """
+    return con.execute(_LIVE_PROBE_SQL).fetchone() is not None
+
+
+def _pinned_ids(con) -> list[str]:
+    """库里的钉住事实（有界）。"""
+    rows = con.execute(
+        "SELECT id FROM facts WHERE status='active' "
+        "AND (valid_to IS NULL OR valid_to='') AND pinned=1 "
+        "ORDER BY id ASC LIMIT ?",
+        (PIN_FETCH_MAX,),
+    ).fetchall()
+    return [str(r["id"]) for r in rows]
+
+
+def _fetch_rows(con, ids: Sequence[str]) -> dict[str, dict]:
+    """按 id 取事实行（去重、分批）。取不到（id 过期 / 写坏了）就不返回那一条。"""
+    uniq = [str(i) for i in dict.fromkeys(ids) if i]
+    out: dict[str, dict] = {}
+    for i in range(0, len(uniq), _ID_BATCH):
+        part = uniq[i : i + _ID_BATCH]
+        sql = "SELECT * FROM facts WHERE id IN ({})".format(",".join("?" * len(part)))
+        for r in con.execute(sql, part).fetchall():
+            d = dict(r)
+            out[str(d.get("id"))] = d
+    return out
+
+
+def _slot_hits(con, tokens: Sequence[str], allowed: set | None = None) -> list[str]:
+    """槽位精确命中：查询词正好等于某条事实的 predicate / object。
+
+    排在融合第一位 —— 它比全文检索精确得多：「不吃香菜」对上了就是对的，
+    而不是碰巧共享一个「吃」字。
+
+    `allowed` 为空 = 不再额外交一遍活跃过滤：WHERE 里已经有 status / valid_to，
+    而「这一轮的注入集合」是在取行**之后**才算得出来的。测试与规模脚本仍可以传一个
+    集合做白名单。
+    """
+    ids: list[str] = []
+    for t in tokens:
+        if len(t) < 2:
+            continue
+        for row in con.execute(
+            "SELECT id FROM facts WHERE status='active' "
+            "AND (valid_to IS NULL OR valid_to='') "
+            "AND (predicate=? OR object=?) LIMIT 8",
+            (t, t),
+        ).fetchall():
+            if allowed is not None and row["id"] not in allowed:
+                continue
+            if row["id"] not in ids:
+                ids.append(row["id"])
+    return ids
+
+
+def _fts_hits(con, query: str, allowed: set | None = None, limit: int = 16) -> list[str]:
+    """全文召回。空 MATCH 表达式在 SQLite 里是**语法错误**，所以先判空。"""
+    expr = to_query(query)
+    if not expr:
+        return []
+    try:
+        rows = con.execute(
+            "SELECT f.id FROM facts_fts JOIN facts f ON f.rowid = facts_fts.rowid "
+            "WHERE facts_fts MATCH ? AND f.status='active' "
+            "AND (f.valid_to IS NULL OR f.valid_to='') "
+            "ORDER BY bm25(facts_fts) LIMIT ?",
+            (expr, limit),
+        ).fetchall()
+    except Exception:  # noqa: BLE001  FTS 坏了不该让检索整条挂掉
+        return []
+    return [r["id"] for r in rows if allowed is None or r["id"] in allowed]
+
+
+def vectors_available(con, dim: int) -> bool:
+    """库里有没有**当前维度**的向量。不加载模型、不编码。
+
+    与写入侧的判断必须是**同一句**：两边各写一份的话，会出现「检索以为有、
+    重建以为没有」这种各说各的的空转。所以这个谓词只定义在这里，写入侧 import 它。
+    """
+    try:
+        row = con.execute("SELECT 1 FROM vectors WHERE dim=? LIMIT 1", (int(dim),)).fetchone()
+    except Exception:  # noqa: BLE001  还没建过 vectors 表（空库）
+        return False
+    return row is not None
+
+
+def _unpack(blob: bytes) -> array.array:
+    """把库里存的小端 float32 还原成一维数组。用 `array` 而不是 numpy：
+    核心零第三方依赖，而这里只需要一个扁平数组。"""
+    a = array.array("f")
+    a.frombytes(bytes(blob))
+    return a
+
+
+def _vec_hits(con, query: str, dim: int, allowed: set | None = None, limit: int = 16) -> list[str]:
+    """向量召回。没有注入 `Embedder`（或它没加载好）时**整支不进**。
+
+    这一支是「口语化转述」那一档的补丁：字面一个词都不重叠时，槽位与全文检索
+    都召不回，向量还能捞一把。它是可选增强，坏了不影响主路径 —— 所以整段
+    吞异常，只在 `last_error()` 里留一笔。
+
+    **余弦下限（`embed_min_cos`）不是可有可无的调参**：融合用的是 RRF，任何一张表里
+    排第一都算「相关度 1.0」，所以向量的一条噪声命中会和全文检索的精确命中同分。
+    而中文短句的余弦本来就挤在一起，不设门槛就是用一堆似是而非的记忆把正确的挤出去。
+
+    **相似度是纯标准库算的**（`sum(map(mul, ...))`，见 `docs/retrieval.md`）：
+    写入侧已经归一化，所以这里只需一次点积。512 维 2000 条本机实测约 44ms，
+    与冷路径预算同一量级；扫描条数由 `embed_scan_max` 封顶。这不是「差不多就行」
+    的估算 —— 超时的代价是**整条冷路径返回空**，所以闸门必须自己算得清楚。
+    """
+    cfg = _cfg()
+    emb = runtime().embedder
+    if not _embedding_on(emb):
+        return []
+    try:
+        if not vectors_available(con, dim):
+            return []
+        vecs = emb.encode([query])
+        if not vecs:
+            return []
+        q = _unpack_encoded(vecs[0])
+        qn = math.sqrt(sum(x * x for x in q))
+        if qn == 0.0:
+            return []
+        # 只读当前维度的行：换过模型的话库里会混着两种维度，混着读出来的相似度
+        # 全是垃圾（而且不报错）。
+        rows = con.execute(
+            "SELECT v.fact_id, v.vec FROM vectors v JOIN facts f ON f.id = v.fact_id "
+            "WHERE v.dim=? AND f.status='active' "
+            "AND (f.valid_to IS NULL OR f.valid_to='') LIMIT ?",
+            (int(dim), int(cfg.embed_scan_max)),
+        ).fetchall()
+        if not rows:
+            return []
+        floor = float(cfg.embed_min_cos)
+        scored: list[tuple[float, str]] = []
+        for r in rows:
+            fid = str(r["fact_id"])
+            if allowed is not None and fid not in allowed:
+                continue
+            sim = sum(map(mul, _unpack(r["vec"]), q)) / qn
+            if sim >= floor:
+                scored.append((sim, fid))
+        scored.sort(key=lambda x: (-x[0], x[1]))
+        return [fid for _sim, fid in scored[:limit]]
+    except Exception:  # noqa: BLE001  向量是可选增强，坏了不影响主路径
+        _note_error()
+        return []
+
+
+def _embedding_on(emb) -> bool:
+    """有没有一条可用的向量路。
+
+    判据是「注入的实现自己说它开着」而不是「配置里写了什么」：向量能力现在是
+    注入进来的，配置里没有 provider 这一项 —— 也就没有「配置说开、实现是空」的
+    那种不一致。
+    """
+    name = str(getattr(emb, "name", "") or "").strip().lower()
+    if not name or name in ("none", "off", "0"):
+        return False
+    return bool(getattr(emb, "loaded", lambda: False)())
+
+
+def _unpack_encoded(vec: Sequence[float]) -> array.array:
+    """把注入的 Embedder 返回的一维向量装进 `array`，让下面的点积走 C 层迭代。"""
+    return array.array("f", (float(x) for x in vec))
+
+
+def _rrf(rank_lists: Sequence[Sequence[str]], k: int = 0) -> dict[str, float]:
+    """Reciprocal Rank Fusion：只用名次不用分数。
+
+    这样省掉了「BM25 和余弦怎么归一化」这个永远调不对的问题 —— 两张表的分数量纲
+    根本不可比，硬凑一个权重函数只会得到一组只在某次评测里好看的系数。
+    """
+    if not k:
+        k = int(_cfg().rrf_k)
+    out: dict[str, float] = {}
+    for lst in rank_lists:
+        for rank, fid in enumerate(lst):
+            out[fid] = out.get(fid, 0.0) + 1.0 / (k + rank + 1)
+    return out
+
+
+def search(
+    uid: str,
+    query: str,
+    *,
+    k: int | None = None,
+    timeout_ms: int | None = None,
+    track: bool = True,
+    exclude_refs: Sequence[str] = (),
+    budget_tokens: int | None = None,
+) -> list[dict]:
+    """冷路径。**绝不抛异常**：超时、索引坏、分词器缺失都只是「这轮没有可注入的」。
+
+    `budget_tokens` 是调用方给的注入预算（对外契约见 `Memory.recall`）；不给就取
+    `hot_tokens`。这个参数曾经在门面上被收下就扔了 —— 契约与实现不一致，而且是
+    「静默忽略」那种：调用方以为限额生效了。
+
+    计时口径（重要）：`recall_ms` 覆盖**整条检索** —— 打开连接、三路召回、按 id 取行、
+    逐行过滤、融合与打分。起点必须在取数**之前**；放在取数之后的话，最贵的那一段
+    压根不在预算里，超时保护形同虚设。
+
+    仍然不进预算的是**进程级一次性开销**（jieba 建词典、向量实现首次 import）——
+    它们属于启动预热，不属于每一轮。
+    """
+    cfg = _cfg()
+    k = int(k if k is not None else cfg.recall_k)
+    budget = int(budget_tokens if budget_tokens is not None else cfg.hot_tokens)
+    budget_ms = float(timeout_ms if timeout_ms is not None else cfg.recall_ms)
+    STATS["search"] += 1
+    t_start = time.perf_counter()
+    deadline = t_start + budget_ms / 1000.0
+    try:
+        con = open_index(uid)
+        try:
+            # ① 三路召回**先**拿 id（各自有 LIMIT），不把全表取回来建对象
+            slots = _slot_hits(con, tokenize(query))
+            fts = _fts_hits(con, query, limit=max(8, k * 4))
+            vec = _vec_hits(con, query, int(cfg.embed_dim), limit=max(8, k * 4))
+            # ② 用户钉住的那批**显式**并进来（有界）。`recall()` 是对外契约，单独
+            #    调它时也得给全 pinned —— 三路召回一条都没撞上就不给的话，
+            #    「用户亲手钉住的承诺无条件进」在冷路径上是假的。
+            pins = _pinned_ids(con)
+            # ③ 只按 id 取这几行，再逐行判「能不能进这一轮的注入集合」
+            rows = _fetch_rows(con, [*pins, *slots, *fts, *vec])
+            live_rows = _dedup_slots(
+                [r for r in rows.values() if _live(r, exclude_refs, float(cfg.min_confidence))]
+            )
+            if not live_rows:
+                STATS["no_hit"] += 1
+                # 「库里没有活跃事实」与「这一问什么都没召回」是两件事，
+                # 靠 reason 分开。探针只在空结果这一条路上跑，`LIMIT 1`、走索引。
+                _mark("no_fact" if not _any_live_fact(con) else "no_hit")
+                return []
+            live = {f["id"]: f for f in live_rows}
+            if time.perf_counter() > deadline:
+                # 算都算完了才超时，这笔时间已经花出去了 —— 这里只是决定
+                # 「这轮算不算数」。所以指标必须把它和「没命中」分开。
+                STATS["timeout"] += 1
+                _mark("timeout", ms=int((time.perf_counter() - t_start) * 1000))
+                return []  # 超时宁可不注入，也不拖首字
+        finally:
+            con.close()
+
+        # 三条召回表的分值归一：**任一**表里排第一就算相关度 1.0，多表同时命中会被
+        # `min(1.0)` 截断（那是「更可信」的加成，不是分数爆表）。不能按「三张表都
+        # 命中」当满分 —— 现实中绝大多数查询只会命中一张表，那样归一出来的相关度
+        # 永远只有 0.33，再乘上画像权重与时间衰减，就没有任何一条能过 `min_score`，
+        # 检索等于形同虚设。
+        rrf = _rrf([slots, fts, vec])
+        top = 1.0 / (int(cfg.rrf_k) + 1)
+        scored = []
+        for fid, raw in rrf.items():
+            f = live.get(fid)
+            if not f:
+                continue
+            if f.get("pinned"):
+                continue  # 钉住的**单独一档**，不参与打分门槛
+            rel = min(1.0, raw / top) if top else 0.0
+            # 画像重排 + 时间衰减
+            qual = 0.5 * float(f.get("importance") or 0.0) + 0.5 * float(
+                f.get("persona_attention") or 0.0
+            )
+            score = rel * (0.75 + 0.25 * qual) * _recency(f)
+            if score < float(cfg.min_score):
+                # 门槛的真实力气只在**召回窗口的尾巴**上：窗口内的分数下限本来就
+                # 高于它，能拦下的是「只命中一张表、又排在尾部、qual 与 recency
+                # 都垫底」那一小段。真正把关的是**召回本身**：槽位要精确相等、
+                # 全文要有词面交叠、向量要过 `embed_min_cos`。所以调门槛之前先想清楚
+                # 它到底在挡什么 —— 把它调高不会让检索更准，只会让注入更少。
+                continue
+            f = dict(f)
+            f["_score"] = round(score, 4)
+            f["_match"] = "slot" if fid in slots else "fts" if fid in fts else "vec"
+            scored.append(f)
+        scored.sort(key=lambda x: (-x["_score"], str(x["id"])))
+        # 钉住的排在**所有**打分结果之前，且不过分数门槛 —— 与 `hot_facts` 的分档
+        # 同序（pinned → 承诺 → 其余），也才配得上「无条件进」这句话。
+        pinned = []
+        for fid in pins:
+            f = live.get(fid)
+            if not f or not f.get("pinned"):
+                continue
+            f = dict(f)
+            f["_score"] = 1.0
+            f["_match"] = "pin"
+            pinned.append(f)
+        pinned.sort(key=lambda x: str(x["id"]))
+        picked, _ = _take_budget(pinned + scored, budget)
+        picked = picked[:k]
+        STATS["vec"] += len(vec)
+        if picked:
+            STATS["ok"] += 1
+            _mark("ok", vec=sum(1 for f in picked if f.get("_match") == "vec"))
+        else:
+            STATS["no_hit"] += 1
+            _mark("no_hit")
+        if picked and track:
+            # track=False 是给 `retrieve_for_turn` 用的：它会把热 + 冷合起来写一次，
+            # 多写一遍就多一次 WAL 提交（Windows 上是十毫秒级），而这段正好压在
+            # 首字延迟上。
+            try:
+                mark_used(uid, [f["id"] for f in picked])
+            except Exception:  # noqa: BLE001
+                _note_error()
+        return picked
+    except Exception:  # noqa: BLE001  检索失败 = 这轮没有记忆可注入
+        _note_error()
+        _mark("error")
+        return []

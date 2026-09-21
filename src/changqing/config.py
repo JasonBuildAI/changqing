@@ -38,9 +38,11 @@ ENV_MAP: dict[str, str] = {
     "min_score": "MIN_SCORE",
     "min_confidence": "MIN_CONFIDENCE",
     "pending_tolerance": "PENDING_TOLERANCE",
+    "rrf_k": "RRF_K",
     "embed_dim": "EMBED_DIM",
     "embed_min_cos": "EMBED_MIN_COS",
     "embed_batch": "EMBED_BATCH",
+    "embed_scan_max": "EMBED_SCAN_MAX",
     "idle_min": "IDLE_MIN",
     "max_turns": "MAX_TURNS",
     "extract_max_calls": "EXTRACT_MAX_CALLS",
@@ -130,6 +132,9 @@ class MemoryConfig:
     min_score: float = 0.35
     min_confidence: float = 0.5
     pending_tolerance: float = 0.6
+    # RRF 融合的平滑常数（名次越低分越小，60 是文献里的常用值）。
+    # 它决定「第 1 名比第 2 名强多少」：调大 = 更平均，调小 = 更看头名。
+    rrf_k: int = 60
 
     # ---------------------------------------------------------------- 向量
     # 注意这里**没有** provider / model / mirror：向量能力由宿主注入
@@ -137,6 +142,10 @@ class MemoryConfig:
     embed_dim: int = 512
     embed_min_cos: float = 0.48
     embed_batch: int = 32
+    # 一次向量召回最多扫多少条索引行。**这是纯 Python 相似度的成本闸门**：
+    # 512 维 2000 条在本机实测约 44ms，与冷路径 50ms 的预算同一量级。
+    # 调大它就要同时想清楚 recall_ms 给多少 —— 超时的结果是整条冷路径返回空。
+    embed_scan_max: int = 2000
 
     # ---------------------------------------------------------------- 后台整理
     idle_min: int = 30
@@ -196,9 +205,11 @@ class MemoryConfig:
                 min_score=_env_float("MIN_SCORE", 0.35),
                 min_confidence=_env_float("MIN_CONFIDENCE", 0.5),
                 pending_tolerance=_env_float("PENDING_TOLERANCE", 0.6),
+                rrf_k=_env_int("RRF_K", 60),
                 embed_dim=_env_int("EMBED_DIM", 512),
                 embed_min_cos=_env_float("EMBED_MIN_COS", 0.48),
                 embed_batch=_env_int("EMBED_BATCH", 32),
+                embed_scan_max=_env_int("EMBED_SCAN_MAX", 2000),
                 idle_min=_env_int("IDLE_MIN", 30),
                 max_turns=_env_int("MAX_TURNS", 200),
                 extract_max_calls=_env_int("EXTRACT_MAX_CALLS", 8),
