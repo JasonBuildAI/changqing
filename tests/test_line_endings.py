@@ -16,15 +16,12 @@ from __future__ import annotations
 
 import os
 
-from _guards import REPO, iter_raw_files
+from _guards import PROBE_PREFIX, REPO, is_probe, iter_raw_files
 
 
-def _offenders() -> list[str]:
-    return [
-        f"{name}（{raw.count(chr(13).encode())} 个）"
-        for name, raw in iter_raw_files()
-        if b"\r" in raw
-    ]
+def _carriage_returns() -> list[tuple[str, int]]:
+    """带 `\\r` 的文件与它有几个。**探针也算在内** —— 下面有一条要证明它会被看到。"""
+    return [(name, raw.count(13)) for name, raw in iter_raw_files() if b"\r" in raw]
 
 
 def test_the_detector_sees_a_carriage_return():
@@ -44,20 +41,22 @@ def test_the_scan_actually_covers_the_repository():
 def test_a_carriage_return_in_the_tree_is_actually_reported():
     """把违规样本**真的放进仓库里**，再确认扫描器会点名它。
 
-    前面那条只证明了「`\r` 是 `\r`」—— 它说明不了 `iter_raw_files` 会走到
+    前面那条只证明了「`\\r` 是 `\\r`」—— 它说明不了 `iter_raw_files` 会走到
     这个文件。而这条护栏最可能坏掉的方式恰恰是「扫描器不再覆盖整棵树」
     （往 `SKIP_DIRS` 里加错一个名字、`rglob` 被换成只扫 `src/`），
     那时它照样全绿。所以这里端到端地走一遍：放进去 → 被报出来 → 删掉。
     """
-    probe = REPO / f".crlf-probe-{os.getpid()}.txt"
+    probe = REPO / f"{PROBE_PREFIX}crlf-{os.getpid()}.txt"
     probe.write_bytes(b"a\r\nb")
     try:
-        hits = _offenders()
+        hits = _carriage_returns()
     finally:
         probe.unlink(missing_ok=True)
-    assert any(probe.name in hit for hit in hits), f"扫描器没报出放进仓库的样本：{hits}"
+    assert any(probe.name in name for name, _ in hits), f"扫描器没报出放进仓库的样本：{hits}"
 
 
 def test_no_file_carries_a_carriage_return():
-    offenders = _offenders()
+    offenders = [
+        f"{name}（{count} 个）" for name, count in _carriage_returns() if not is_probe(name)
+    ]
     assert offenders == [], f"这些文件里有 \\r（`.gitattributes` 要求 eol=lf）：{offenders}"

@@ -67,9 +67,25 @@ SKIP_NAME_PREFIXES = (".coverage.",)
 # 单文件上限：一个几兆的文件不是仓库内容，但它能让整套测试慢下来。
 MAX_BYTES = 2_000_000
 
+# 护栏自己往仓库里放的**一次性探针**，见 `test_a_carriage_return_in_the_tree_
+# _is_actually_reported`：光证明「扫描器认得违规样本」说明不了它还覆盖着这棵树，
+# 所以真的放一份进去，看它会不会被报出来。
+#
+# 探针**照常被扫描**（不然那个证明就无从谈起），只是全仓库的「一处都没有」
+# 断言会把它们滤掉。不滤的话两条护栏会互相打架：行尾那条正拿着一份带 `\r` 的
+# 探针，隐私那条扫到它 —— 于是随机某一条变红，而红的不是代码。
+PROBE_PREFIX = ".changqing-probe-"
+
+
+def is_probe(name: str) -> bool:
+    """这个仓库相对路径是一次性探针吗（`name` 是 `iter_*` 产出的那种字符串）。"""
+    return Path(name).name.startswith(PROBE_PREFIX)
+
 
 def _skipped(path: Path) -> bool:
-    if path.name in SKIP_NAMES or path.name.startswith(SKIP_NAME_PREFIXES):
+    if path.name.startswith(SKIP_NAME_PREFIXES):
+        return True
+    if path.name in SKIP_NAMES:
         return True
     return any(part in SKIP_DIRS or part.endswith(".egg-info") for part in path.parts)
 
