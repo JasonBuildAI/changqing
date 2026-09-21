@@ -39,12 +39,16 @@ python examples/quickstart.py
 from changqing import Memory, MemoryConfig
 from changqing.adapters.mock import MockEmbedder, MockLLM
 
-mem = Memory("user-1", config=MemoryConfig(root="./data"),
-             embedder=MockEmbedder(), llm=MockLLM(default=抽取输出))
+mem = Memory(
+    "user-1",
+    config=MemoryConfig(root="./data"),
+    embedder=MockEmbedder(),
+    llm=MockLLM(default=抽取输出),
+)
 mem.remember({"user": "我家猫叫团子", "assistant": "记住了，团子。"})
-mem.extract_now()                     # 真实部署里由后台线程按触发条件跑
+mem.extract_now()  # 真实部署里由后台线程按触发条件跑
 for fact in mem.recall("我家猫叫什么？"):
-    print(fact["subject"] + fact["predicate"] + fact["object"])   # 他养的猫叫团子
+    print(fact["subject"] + fact["predicate"] + fact["object"])  # 他养的猫叫团子
 ```
 
 ## 四层
@@ -127,7 +131,7 @@ from fastapi import FastAPI
 from changqing.server import create_router
 
 app = FastAPI()
-app.include_router(create_router(), prefix="/api")   # 于是 /api/memory 就是记忆接口
+app.include_router(create_router(), prefix="/api")  # 于是 /api/memory 就是记忆接口
 ```
 
 路径是**相对的**，前缀由宿主决定。**没有任何接口接受 uid 参数** —— 身份只从服务端

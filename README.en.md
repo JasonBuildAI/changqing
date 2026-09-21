@@ -45,10 +45,14 @@ one-line change (see "Bring your own model").
 from changqing import Memory, MemoryConfig
 from changqing.adapters.mock import MockEmbedder, MockLLM
 
-mem = Memory("user-1", config=MemoryConfig(root="./data"),
-             embedder=MockEmbedder(), llm=MockLLM(default=extraction_json))
+mem = Memory(
+    "user-1",
+    config=MemoryConfig(root="./data"),
+    embedder=MockEmbedder(),
+    llm=MockLLM(default=extraction_json),
+)
 mem.remember({"user": "my cat is called Tuanzi", "assistant": "noted."})
-mem.extract_now()                    # in production a background thread drives this
+mem.extract_now()  # in production a background thread drives this
 for fact in mem.recall("what is my cat called?"):
     print(fact["predicate"] + fact["object"])
 ```
@@ -138,7 +142,7 @@ from fastapi import FastAPI
 from changqing.server import create_router
 
 app = FastAPI()
-app.include_router(create_router(), prefix="/api")   # /api/memory is now the memory API
+app.include_router(create_router(), prefix="/api")  # /api/memory is now the memory API
 ```
 
 Paths are **relative**: the prefix belongs to the host. **No endpoint accepts a uid
