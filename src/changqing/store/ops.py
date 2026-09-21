@@ -105,7 +105,11 @@ def apply_op(con: sqlite3.Connection, op: dict[str, Any]) -> None:
         cur = con.execute("SELECT * FROM facts WHERE id=?", (fid,)).fetchone()
         if cur is None:
             return
-        merged = {k: cur[k] for k in cur}
+        # **`cur.keys()` 不能写成 `for k in cur`**：`sqlite3.Row` 迭代出来的是
+        # **值**不是列名，`cur[k]` 会拿一个值当索引去查，抛 `IndexError`。
+        # 而 `materialize` 把一条坏 op 隔离成 `bad_ops` 里的一行就继续走 ——
+        # 于是「编辑一条记忆」变成了「编辑被丢掉、界面照旧报成功」。
+        merged = dict(zip(cur.keys(), cur, strict=True))
         merged.update({k: v for k, v in sets.items() if k in index._FACT_FIELDS})
         index._write_fact(con, str(fid), merged)
     elif kind == "INVALIDATE":
