@@ -27,6 +27,11 @@ cfg = MemoryConfig(root="./data", hot_tokens=200)  # 或者直接写死
 `MemoryConfig.from_env()` 里读一次，读出来的东西是一个冻结的数据类，
 谁要就往构造器里传。
 
+这条规矩由 `tests/test_config_injection.py` 机械执行：`config.py` 之外任何一处
+读环境变量的调用都变红。它走 AST 而不是正则，所以文档字符串里那句
+`api_key=os.environ["OPENAI_API_KEY"]`（教宿主**自己**读一次再传进来，
+正是这条规矩要的写法）不会被误判。
+
 ## 读取语义
 
 四条，都写在 `_env_*` 那四个小函数里：

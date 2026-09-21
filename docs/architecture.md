@@ -78,7 +78,7 @@
 | `runtime.py` | 进程级装配：配置 + 画像 + 三个注入的能力 |
 | `ports.py` | 三个 Protocol 与它们的空实现（`NullEmbedder` / `NullLLM` / `NoUsage`） |
 | `persona.py` | 画像的形状（`PersonaProfile`）与中性默认值 |
-| `types.py` | 落盘结构的 `TypedDict`，供调用方与 mypy 看 |
+| `types.py` | 核心数据形状的 `TypedDict`（`Fact` / `Turn` / `MemoryContext` …），与实现**逐键对齐**，由 `tests/test_types.py` 机械校验 |
 | `store/` | 落盘：L0、操作日志、物化索引、纪要、话题、渲染视图 |
 | `extract.py` | 抽取：prompt、解析、回引校验、时间绝对化、冲突消解 |
 | `retrieve.py` | 检索：热 / 冷路径、RRF、画像重排、预算裁剪、卡片文本 |
@@ -90,6 +90,19 @@
 | `memory.py` | 门面 `Memory`：把上面这些拼成一个对象的用法 |
 | `server/` | 可挂载的 FastAPI 路由（相对路径，前缀归宿主） |
 | `adapters/` | 现成实现：离线替身、OpenAI 兼容端点 |
+
+### 三条机械护栏
+
+上面那些「不许」里有三条是能被机器检查的，所以它们不靠自觉：
+
+| 护栏 | 检查什么 | 它防的是哪种「靠人看不出来」 |
+|---|---|---|
+| `tests/test_no_host_coupling.py` | 有没有 import 宿主那个顶层包 | 在宿主里跑得好好的，换一个进程就 `ImportError`；藏在函数体里的那种连 import 时都不报错 |
+| `tests/test_no_private_terms.py` | 有没有混进属于宿主、本机、或那个具体角色的词 | 这些词是**顺手带过来**的：一句真实对话样例、一个绝对路径、一个角色名，review 时看着都无害，然后跟着仓库一起公开 |
+| `tests/test_config_injection.py` | `config.py` 之外有没有第二处读环境变量 | 那份值在导入时被固化，之后测试里换掉的配置**改不到它、而且不报错** |
+
+三条都各自先证明自己**认得违规样本**，再去扫仓库 —— 一条从不失败的护栏比
+没有护栏更糟：它让人以为这件事有人在管。
 
 ## 依赖方向：两个地方必须反向 import
 

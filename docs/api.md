@@ -115,6 +115,12 @@ Memory(
 | `last_used_at` · `use_count` | 派生层记账，只影响排序 |
 | `_score` | 融合后的分数（`rel × (0.75 + 0.25 × qual) × recency`） |
 
+这些形状在 `changqing.types` 里都有对应的 `TypedDict`（`Fact` / `Turn` /
+`Topic` / `Summary` / `MemoryContext` / `MemoryStats` / `StoreStats` …），
+可以直接拿来给自己那层加类型标注。它们与实现**逐键对齐**，由
+`tests/test_types.py` 钉住 —— 这份定义曾经漂过（状态白名单里躺着一个从来
+不写的值，`Fact` 里写着一个不存在的列），而形状漂移是不报错的。
+
 `context()` 的返回多几样：`facts` / `summaries` / `topics` 三份素材，
 加上 `hot` · `cold`（各几条）、`used_tokens`（**三份加起来的实际注入量**）、
 `ms`、`backend`、`reason`。`reason` 是「冷路径为什么是空的」：
