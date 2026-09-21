@@ -117,6 +117,9 @@ class MemoryConfig:
     root: Path = None  # type: ignore[assignment]  # __post_init__ 里给默认值
     reset_mode: str = "purge"
     forget_mode: str = "archive"
+    # **0 = 永不清理**（一行关掉超期归档）。负数按写错了的配置处理，同样夹回 0
+    # 而不是夹到 1：一个负的保留期语义上比 0 更极端，把它读成「保留一个月」
+    # 会让用户以为关掉了，实际每月都在搬走原话。
     retain_months: int = 24
     render_views: bool = True
 
@@ -176,8 +179,8 @@ class MemoryConfig:
             object.__setattr__(self, "root", default_root())
         else:
             object.__setattr__(self, "root", Path(self.root).expanduser())
-        if self.retain_months < 1:
-            object.__setattr__(self, "retain_months", 1)
+        if self.retain_months < 0:
+            object.__setattr__(self, "retain_months", 0)
         if self.embed_dim < 1:
             object.__setattr__(self, "embed_dim", 1)
         if self.idle_split_sec < 0:
