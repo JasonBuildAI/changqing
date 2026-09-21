@@ -54,6 +54,7 @@ ENV_MAP: dict[str, str] = {
     "merge_similarity": "MERGE_SIMILARITY",
     "commitment_slots": "COMMITMENT_SLOTS",
     "idle_split_sec": "IDLE_SPLIT_SEC",
+    "history_window": "HISTORY_WINDOW",
 }
 
 
@@ -159,6 +160,12 @@ class MemoryConfig:
     merge_similarity: float = 0.8
     commitment_slots: int = 3
 
+    # ---------------------------------------------------------------- 上下文窗口
+    # 喂给模型的最近消息条数（**调用方的选择**，本库猜不出来）。
+    # 记忆去重的窗口必须与它相等：小了 = 模型刚看过的话又被当记忆喂一遍；
+    # 大了 = 掉出窗口的话因为还被排除，所以永远不再注入。
+    history_window: int = 24
+
     # ---------------------------------------------------------------- 唯一的空闲判据
     # **不许引入第二个空闲概念**。它既决定喂给模型的上下文何时重开，
     # 也决定「这一场」的边界（整理按场做）。
@@ -221,6 +228,7 @@ class MemoryConfig:
                 merge_similarity=_env_float("MERGE_SIMILARITY", 0.8),
                 commitment_slots=_env_int("COMMITMENT_SLOTS", 3),
                 idle_split_sec=_env_int("IDLE_SPLIT_SEC", 600),
+                history_window=_env_int("HISTORY_WINDOW", 24),
             )
         finally:
             ENV_PREFIX = old

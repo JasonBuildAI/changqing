@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import array
 import math
+import re
 import time
 import traceback
 from collections.abc import Sequence
@@ -740,3 +741,170 @@ def search(
         _note_error()
         _mark("error")
         return []
+
+
+# ---------------------------------------------------------------- 编排
+# 「他提到过去了」的关键词表。它唯一的用途是决定**要不要多跑一次冷路径检索**
+# —— 那是记忆召回，不是话术触发。
+PAST_PATTERNS = {
+    "user_mentions_past": r"上次|之前|记得|说过|提过|那次|你说过|我说过",
+    "user_recall_past": r"那时候|从前|以前|当年|你刚来|刚认识",
+}
+
+
+def past_mentioned(query: str) -> bool:
+    """这句话有没有在指过去。命中任一模式即算。"""
+    q = (query or "").strip()
+    if not q:
+        return False
+    return any(re.search(p, q, re.IGNORECASE) for p in PAST_PATTERNS.values())
+
+
+def _backend() -> str:
+    """当前分词器名字（jiaba / bigram）。给自检与面板看。"""
+    from .tokenize import backend
+
+    return backend()
+
+
+def _has_live_facts(uid: str) -> bool:
+    """这个用户的库里到底有没有**活跃事实**。走索引，`LIMIT 1` 就够。
+
+    为什么要问这一句：`_cold_triggered` 的兜底条目是「热路径为空但**有事实**才去
+    捞一次」。少了那一句，一条事实都没有的新用户每轮都会 `open_index()`（首次还要
+    建全套 schema）并记一次统计噪声，然后捞回空。
+
+    `LIMIT 1` 而不是 `COUNT(*)`：这里只问「有没有」，不问「有多少」。SQL 本身与冷
+    路径用的那条是**同一句**：两处对「有没有活跃事实」的答案必须一样，否则统计视图
+    与冷路径的 reason 会各说各的。
+    """
+    con = open_index(uid)
+    try:
+        return _any_live_fact(con)
+    finally:
+        con.close()
+
+
+def _cold_triggered(query: str, hot: list[dict], uid: str) -> bool:
+    """冷路径的触发条件。
+
+    三条按文档来的判据（指向过去 / 热路径为空 / 与热路径有词面交叠），外加一条兜底：
+    **热路径为空、但库里确实有活跃事实**时也去捞一次 —— 否则「有没有素材」这个门控
+    会一直饿着，冷路径永远进不了候选池。
+
+    兜底的前提里「有活跃事实」不能省：少了它，一条事实都没有的新用户每轮都白跑一次
+    `open_index()` + 一次检索。
+
+    查库失败时**退回「捞一次」**：探针坏了的时候，多捞一次比静默少注入安全。
+    """
+    if past_mentioned(query):
+        return True
+    if not hot:
+        try:
+            return _has_live_facts(uid)
+        except Exception:  # noqa: BLE001  探针坏了 = 按宽松那边兜底
+            return True
+    toks = {t for t in tokenize(query) if len(t) >= 2}
+    if not toks:
+        return False
+    return any(toks & {t for t in tokenize(card_text(f)) if len(t) >= 2} for f in hot)
+
+
+def recent_turn_refs(sess: dict[str, Any], window: int | None = None) -> list[str]:
+    """最近若干轮用过的 L0 轮次 id。刚说完的事不该再当记忆喂一遍。
+
+    `window` 的默认值取 `history_window`，**必须与调用方喂给模型的上下文窗口相等**：
+    小了是「模型刚看过的话又被当记忆喂一遍」，大了是「掉出窗口的话因为还被排除，
+    所以永远不注入」。所以它是一项**配置**而不是这里的字面量 —— 这个库不知道调用方
+    给了模型多长的上下文，硬写一个数字只能靠一条测试去钉住两边相等。
+    """
+    if window is None:
+        window = int(_cfg().history_window)
+    out: list[str] = []
+    for h in (sess.get("history") or [])[-int(window) :]:
+        tid = h.get("turn_id")
+        if tid:
+            out.append(str(tid))
+    return out
+
+
+def retrieve_for_turn(
+    uid: str | None, query: str, sess: dict[str, Any], *, proactive: bool = False
+) -> dict[str, Any]:
+    """一轮对话要注入的记忆：热路径恒定 + 冷路径按需（话题只在主动开口那一轮）。
+
+    返回的结构是这一轮唯一的**素材来源** —— 卡片渲染、门控、指标三处都读它。
+    **门控与素材必须同源**：两边各读各的就会「冷路径选中了、卡槽空着，模型自己把
+    细节编出来」。
+    """
+    started = time.perf_counter()
+    out: dict[str, Any] = {
+        "facts": [],
+        "hot": 0,
+        "cold": 0,
+        "ms": 0,
+        "used_tokens": 0,
+        "summaries": [],
+        "topics": [],
+        "enabled": bool(uid),
+    }
+    if not uid:
+        return out
+    if not _cfg().enabled:
+        return out
+    exclude = recent_turn_refs(sess)
+    try:
+        hot = hot_facts(uid, exclude_refs=exclude)
+    except Exception:  # noqa: BLE001
+        # **吞掉不等于静默**：热路径每次报错都留一笔。少了这一句，「热路径因为内部
+        # 错误一直是空的」在日志与统计里一个字都没有，表现只是「她记性不太好」。
+        _note_error()
+        hot = []
+    # 故事线（L2）：与热路径事实同一次编排取回，渲染与指标才读得到同一份东西。
+    story = hot_summaries(uid)
+    # 主动话题：**只有她先开口那一轮才读**（理由见 `hot_topics`）。
+    topics = hot_topics(uid) if proactive else []
+    seen = {f["id"] for f in hot}
+    cold: list[dict] = []
+    reason = "hot_only"  # 没走冷路径：热路径那几条就够了
+    if _cold_triggered(query, hot, uid):
+        cold = [
+            f for f in search(uid, query, track=False, exclude_refs=exclude) if f["id"] not in seen
+        ]
+        # 冷路径「为什么是空的」要能被上面看见：超时 / 没命中 / 报错
+        reason = str(LAST.get("reason") or "")
+    facts = hot + cold
+    out.update(
+        {
+            "facts": facts,
+            "summaries": story,
+            "topics": topics,
+            "hot": len(hot),
+            "cold": len(cold),
+            # 这一轮实际注入的 token：**事实 + 故事线 + 话题**，三份各有自己的预算。
+            # 只算事实的话，下一个人会拿它当成「这一轮的注入量」，而另外两份凭空消失。
+            "used_tokens": (
+                sum(estimate_tokens(card_text(f)) for f in facts)
+                + sum(estimate_tokens(s.get("text") or "") for s in story)
+                + sum(estimate_tokens(t.get("text") or "") for t in topics)
+            ),
+            "ms": int((time.perf_counter() - started) * 1000),
+            "backend": _backend(),
+            "reason": reason,
+        }
+    )
+    if facts:
+        try:
+            mark_used(uid, [f["id"] for f in facts])
+        except Exception:  # noqa: BLE001
+            _note_error()
+    if topics:
+        # 挑过了就划掉：同一件事反复主动提，是「她只会这一句」的样子。
+        # 它只是派生层的排序状态，不进日志。
+        try:
+            from .store import mark_topics_used
+
+            mark_topics_used(uid, [t["id"] for t in topics if t.get("id")])
+        except Exception:  # noqa: BLE001  划不掉只是下次还会挑到它
+            _note_error()
+    return out
