@@ -1,0 +1,27 @@
+name: 功能建议
+description: 提一个能力或改进
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 你在解决什么问题
+      description: 讲场景，不要直接讲方案。
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 你设想的做法
+    validations:
+      required: false
+  - type: textarea
+    id: cost
+    attributes:
+      label: 成本与占用
+      description: |
+        这个仓库对「每轮多花多少 token / 多占多少存储」是敏感的。
+        如果这个建议会改变每轮成本，请估一个量级。
+    validations:
+      required: false
+

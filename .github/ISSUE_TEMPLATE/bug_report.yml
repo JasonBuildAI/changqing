@@ -1,0 +1,39 @@
+name: Bug 报告
+description: 报一个可复现的缺陷
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请**不要**贴真实对话内容、密钥或记忆库文件。需要复现数据时请自己构造最小夹具。
+  - type: input
+    id: version
+    attributes:
+      label: 版本
+      description: changqing 版本、Python 版本、操作系统
+      placeholder: "0.1.0 / Python 3.11 / Windows 11"
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: 发生了什么
+      description: 期望的行为 vs 实际的行为
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: 最小复现
+      description: 一段能跑起来的代码。请用 mock 适配器，不要依赖真实 API Key。
+      render: python
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 相关日志或报错
+      render: shell
+    validations:
+      required: false
+
