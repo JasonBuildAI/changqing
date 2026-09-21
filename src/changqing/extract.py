@@ -23,10 +23,13 @@
 
 from __future__ import annotations
 
+import json
+import re
 from collections.abc import Sequence
 
 from .persona import PersonaProfile
 from .runtime import runtime
+from .tokenize import tokenize
 
 # ---------------------------------------------------------------- 抽取 prompt
 # 画像在模板里留一个记号，最后用 `replace` 插进去（不用 `str.format`：
@@ -139,3 +142,113 @@ def build_messages(
         {"role": "system", "content": build_system(persona)},
         {"role": "user", "content": EXTRACT_USER.format(today=today, lines="\n".join(lines))},
     ]
+
+
+# ---------------------------------------------------------------- 解析
+def _first_json_obj(raw: str) -> dict | None:
+    """从模型输出里抠出第一个能解析的 JSON 对象。坏 JSON 一律返回 None。"""
+    if not raw:
+        return None
+    cands = []
+    m = re.search(r"```(?:json)?\s*([\s\S]*?)```", raw)
+    if m:
+        cands.append(m.group(1).strip())
+    a, b = raw.find("{"), raw.rfind("}")
+    if 0 <= a < b:
+        cands.append(raw[a : b + 1])
+    for c in cands:
+        # 第二遍去掉尾随逗号：模型很爱在数组最后一项后面留一个逗号，
+        # 而 `json.loads` 对此零容忍 —— 那一条会连累整批抽取结果被判成「没抽到」。
+        for attempt in (c, re.sub(r",\s*([}\]])", r"\1", c)):
+            try:
+                obj = json.loads(attempt)
+            except Exception:  # noqa: BLE001  容错函数的本分：坏 JSON 当没抽到
+                continue
+            if isinstance(obj, dict):
+                return obj
+    return None
+
+
+def parse_facts(raw: str) -> list[dict]:
+    """从模型输出里抠出事实数组。坏 JSON 一律当「没抽到」，**绝不抛异常**。
+
+    兼容两种输出：裸数组（老约定），以及 `{"facts": [...], "summary": "..."}`。
+    两种都认是有意的：模型换了版本、或者哪天回了老格式，都不该让整段整理变成 0 条。
+    """
+    if not raw:
+        return []
+    obj = _first_json_obj(raw)
+    if obj is not None and isinstance(obj.get("facts"), list):
+        return [x for x in obj["facts"] if isinstance(x, dict)]
+    # 裸数组
+    a, b = raw.find("["), raw.rfind("]")
+    if 0 <= a < b:
+        chunk = raw[a : b + 1]
+        for attempt in (chunk, re.sub(r",\s*([}\]])", r"\1", chunk)):
+            try:
+                arr = json.loads(attempt)
+            except Exception:  # noqa: BLE001  同上：解析失败不该让整段整理炸掉
+                continue
+            if isinstance(arr, list):
+                return [x for x in arr if isinstance(x, dict)]
+    return []
+
+
+def parse_summary(raw: str) -> str:
+    """取出这一段对话的纪要。没有、或者长得不像纪要就不要（宁可没有）。"""
+    obj = _first_json_obj(raw)
+    if not obj:
+        return ""
+    return str(obj.get("summary") or "").strip()[:500]
+
+
+# ---------------------------------------------------------------- 闸 1 / 2：回引校验
+def _norm(s: str) -> str:
+    """去掉空白与标点，只留内容。回引比对要在「内容」上做，不在排版上做。"""
+    return re.sub(r"[\s，。！？、；：,.!?;:\"'“”‘’（）()\[\]【】…—-]+", "", str(s or ""))
+
+
+def overlap(quote: str, text: str) -> float:
+    """`quote` 有多少比例能在 `text` 里找到（按 token 覆盖率）。
+
+    为什么不用整串相似度：quote 是短句、text 是整轮，字符级相似度天然很低，
+    会把合理的转述全判成编造 —— 而「合理转述」恰恰是我们想留下的那一类。
+    """
+    qt = [t for t in tokenize(quote) if _norm(t)]
+    if not qt:
+        return 0.0
+    body = _norm(text)
+    hit = sum(1 for t in qt if _norm(t) and _norm(t) in body)
+    return hit / len(qt)
+
+
+def verify(fact: dict, turns_by_id: dict[str, dict], tolerance: float = 0.0) -> tuple[str, float]:
+    """回引校验。返回 `(active | pending | drop, 分数)`。
+
+    **只看 `turn_ref` 指的那一轮。** 全库匹配的话，「上下文里碰巧出现过那个词」
+    也会被当成命中，而那不是证据。
+    """
+    tol = tolerance or runtime().config.pending_tolerance
+    tid = str(fact.get("turn_ref") or "").strip()
+    if not tid:
+        return "drop", 0.0  # 闸 1：没有回引，直接丢
+    turn = turns_by_id.get(tid)
+    if turn is None:
+        return "drop", 0.0  # 回引到一个不存在的轮次 = 编的
+    text = str(turn.get("text") or "")
+    role = str(turn.get("role"))
+    kind = str(fact.get("kind") or "").strip().lower()
+    # 他说的话默认收；她的话**只收 kind=promise**（她答应他的事，铁律 2）。
+    # 不放宽这一条的话，「她答应过他的事」永远进不了事实层 —— 她的承诺只存在于
+    # assistant 行里，一律 drop 的表现就是「她忘了自己答应过什么」。
+    if role != "user" and not (role == "assistant" and kind == "promise"):
+        return "drop", 0.0
+    quote = str(fact.get("quote") or "").strip()
+    if not quote:
+        return "drop", 0.0
+    if _norm(quote) in _norm(text):
+        return "active", 1.0
+    score = overlap(quote, text)
+    if score >= tol:
+        return "pending", round(score, 3)  # 近似：待确认，**不丢**
+    return "drop", round(score, 3)
