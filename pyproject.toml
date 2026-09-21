@@ -65,3 +65,66 @@ packages = ["src/changqing"]
 [tool.hatch.build.targets.sdist]
 include = ["src", "tests", "docs", "examples", "benchmarks", "README.md", "README.en.md", "LICENSE", "NOTICE", "CHANGELOG.md"]
 
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+# E/F = pycodestyle + pyflakes，I = import 排序，UP = pyupgrade，
+# B = bugbear，SIM = 可简化写法，RUF = ruff 自己的规则集。
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+ignore = [
+  # 中文注释与文档字符串行宽天然偏长，交给 line-length 而不是 E501 逐行判。
+  "E501",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# 测试里到处是「先断言再构造」的写法，SIM 的合并建议只会让断言更难读。
+"tests/**" = ["SIM"]
+
+[tool.ruff.lint.isort]
+# src 布局下把自己的包标成 first-party，否则会被当成第三方排到别处。
+known-first-party = ["changqing"]
+
+[tool.mypy]
+python_version = "3.10"
+files = ["src/changqing"]
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+no_implicit_optional = true
+check_untyped_defs = true
+ignore_missing_imports = true
+# 不要求每个函数都写类型：这个库里有大量「内部小工具」，先把**行为**的类型
+# 钉住比追求 100% 覆盖率更值。等接口冻结后再考虑打开 disallow_untyped_defs。
+disallow_untyped_defs = false
+
+[[tool.mypy.overrides]]
+# jieba 没有类型存根，且是可选依赖（见 [project.optional-dependencies]）。
+module = ["jieba.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-m 'not online' -q"
+markers = [
+  "online: 需要真实 API Key 与网络（含真实模型）；默认档不选它",
+  "slow: 墙钟阈值型断言（负载下会抖）；默认档不选它",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["src/changqing"]
+omit = ["src/changqing/server/*"]
+
+[tool.coverage.report]
+show_missing = true
+exclude_lines = [
+  "pragma: no cover",
+  "if TYPE_CHECKING:",
+  "raise NotImplementedError",
+]
