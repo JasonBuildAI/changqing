@@ -127,7 +127,6 @@ markers = [
 [tool.coverage.run]
 branch = true
 source = ["src/changqing"]
-omit = ["src/changqing/server/*"]
 
 [tool.coverage.report]
 show_missing = true
