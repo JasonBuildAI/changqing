@@ -37,12 +37,17 @@ from changqing.store import (
 
 UID_A = "u" + "a" * 16
 UID_B = "u" + "b" * 16
-DAY = time.strftime("%Y-%m-%d")
-HOUR = time.strftime("%H:%M")
+# 「现在」在这一份里**只取一次**。`append_turn` 是按 ts 自己算日期与小时的，
+# 所以期望值必须来自**同一个** ts：期望值在导入时取、写入时又取一次的话，
+# 跨过整点的那一次运行会掉在两条记录中间 —— 那是环境抖，不是代码错
+# （真踩过：`## {HOUR}` 那条断言在整点后 0.1 秒变红，单跑又是绿的）。
+TS = time.time()
+DAY = time.strftime("%Y-%m-%d", time.localtime(TS))
+HOUR = time.strftime("%H:%M", time.localtime(TS))
 
 
 def turn(user: str, assistant: str, ts: float | None = None) -> dict:
-    return {"user": user, "assistant": assistant, "ts": ts or time.time()}
+    return {"user": user, "assistant": assistant, "ts": ts or TS}
 
 
 # ---------------------------------------------------------------- 追加写
@@ -74,14 +79,14 @@ def test_her_messages_keep_their_boundaries(rt: Runtime):
     并成一段之后，「她当时是分两次说的」这件事就永远查不回来了 —— 而整理是从
     这些行里抽事实的，边界没了，抽出的事实也跟着糊。
     """
-    ids = append_turn(UID_A, {"user": "在吗", "assistant": ["嗯", "怎么了"], "ts": time.time()})
+    ids = append_turn(UID_A, {"user": "在吗", "assistant": ["嗯", "怎么了"], "ts": TS})
     assert len(ids) == 3
     assert [r["role"] for r in read_turns(UID_A)] == ["user", "assistant", "assistant"]
 
 
 def test_she_can_be_remembered_before_she_answers(rt: Runtime):
     """他先说完、她还没回的时候也要能记：只写他那一半。"""
-    append_turn(UID_A, {"user": "我先睡了啊", "ts": time.time()})
+    append_turn(UID_A, {"user": "我先睡了啊", "ts": TS})
     assert [r["role"] for r in read_turns(UID_A)] == ["user"]
 
 

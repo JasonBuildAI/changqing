@@ -588,9 +588,12 @@ def test_archiving_happens_at_most_once_a_day(rt: Runtime):
     """
     _old_say(UID, "很久以前说过的话", 900)
     w = MemoryWorker()
+    # 这一天是**代码在它自己那一刻**写下的，所以期望值要把跨越午夜的那一次也认下来
+    # —— 否则这条断言会在 00:00 前后偶发变红，而红的是环境不是代码。
+    before = time.strftime("%Y-%m-%d")
     assert w._archive_if_due(UID)["files"] == 1
     assert w._archive_if_due(UID) == {}, "今天第二次是空的（没再扫目录）"
-    assert load_state(UID)["last_archive_scan"] == time.strftime("%Y-%m-%d")
+    assert load_state(UID)["last_archive_scan"] in (before, time.strftime("%Y-%m-%d"))
 
 
 def test_archiving_is_skipped_when_retention_is_off(rt: Runtime, mem_root):
