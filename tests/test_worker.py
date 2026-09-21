@@ -14,6 +14,7 @@ from contextlib import contextmanager
 
 import pytest
 
+from changqing.adapters.mock import MockEmbedder
 from changqing.runtime import Runtime, using
 from changqing.store import (
     append_turn,
@@ -21,6 +22,7 @@ from changqing.store import (
     list_summaries,
     list_topics,
     load_state,
+    open_index,
     read_turns,
     update_state,
 )
@@ -423,6 +425,143 @@ def test_disk_uid_list_is_cached(rt: Runtime, monkeypatch: pytest.MonkeyPatch):
     assert w._disk_uid_list() == [UID], "TTL 内用缓存"
     w._disk_listed_at = 0.0  # 假装 TTL 过期
     assert len(w._disk_uid_list()) == 2, "过期后重新列，新人进来了"
+
+
+# ---------------------------------------------------------------- L0 归档
+def test_the_loop_actually_drives_both_debt_sweeps(rt: Runtime, monkeypatch):
+    """空转那一支必须**真的接上** `_ensure_vectors` 与 `_sweep_disk`。
+
+    这里守的是一个具体踩过的坑：两个方法都写好了、单测也都直接调它们、全绿 ——
+    而 `_loop` 里那一支忘了调。于是「磁盘欠账」这条设计上存在的路**根本没跑过**，
+    而所有测试与统计都显示一切正常。
+    """
+    w = MemoryWorker()
+    calls: list[str] = []
+
+    def fake_get(timeout: int = 30) -> str:
+        # 空转一次，然后让下一轮开头就退出循环
+        w._stop.set()
+        return ""
+
+    monkeypatch.setattr(w._q, "get", fake_get)
+    monkeypatch.setattr(w._q, "put", lambda item: None)
+    monkeypatch.setattr(w, "_ensure_vectors", lambda: calls.append("vectors"))
+    monkeypatch.setattr(w, "_sweep_disk", lambda: calls.append("disk"))
+    monkeypatch.setattr(w, "_sweep_idle", lambda: calls.append("idle"))
+    w._loop()
+    assert calls == ["vectors", "disk", "idle"], f"空转那一轮该做的三件事：{calls}"
+
+
+# ---------------------------------------------------------------- 向量欠账
+class NotReadyEmbedder(MockEmbedder):
+    """装上了但还没加载好 —— 模型在下载中、或宿主还没预热。"""
+
+    def ready(self, download: bool = True) -> bool:
+        return False
+
+
+def vector_count(uid: str) -> int:
+    con = open_index(uid)
+    try:
+        return int(con.execute("SELECT COUNT(*) AS n FROM vectors").fetchone()["n"])
+    finally:
+        con.close()
+
+
+def test_a_missing_model_puts_the_uid_on_the_backlog(rt: Runtime):
+    """模型没就绪时**先欠着**：那轮整理照常成功，只是向量留给下一次补。
+
+    不记这笔账的话，欠下的那些向量永远补不回来 —— 而「向量少了」是静默的：
+    召回差一点，没有任何报错、没有进任何指标。
+    """
+    w = MemoryWorker()
+    say(UID, "我家猫叫团子")
+    with using(Runtime(config=rt.config, embedder=NotReadyEmbedder())):
+        out = w.extract_uid(
+            UID,
+            call=lambda _m: facts_json(
+                {
+                    "predicate": "养的猫叫",
+                    "object": "团子",
+                    "quote": "我家猫叫团子",
+                    "turn_ref": "T-000001",
+                }
+            ),
+        )
+        assert out["ok"] is True, "向量欠着不影响整理本身"
+        assert out["vectors"]["reason"] == "embed_unavailable"
+        assert UID in w._vector_backlog
+        w._ensure_vectors()
+    assert UID in w._vector_backlog, "模型还是没好：接着欠"
+
+
+def test_the_backlog_is_drained_once_the_model_shows_up(rt: Runtime):
+    """模型到位之后由维护循环补上，整理不用重跑。"""
+    w = MemoryWorker()
+    say(UID, "我家猫叫团子")
+    with using(Runtime(config=rt.config, embedder=NotReadyEmbedder())):
+        w.extract_uid(
+            UID,
+            call=lambda _m: facts_json(
+                {
+                    "predicate": "养的猫叫",
+                    "object": "团子",
+                    "quote": "我家猫叫团子",
+                    "turn_ref": "T-000001",
+                }
+            ),
+        )
+    assert UID in w._vector_backlog
+
+    with using(Runtime(config=rt.config, embedder=MockEmbedder())):
+        w._ensure_vectors()
+    assert w._vector_backlog == set(), "补上了就从欠账里划掉"
+    assert vector_count(UID) == 1, "向量真的写进去了"
+
+
+def test_a_healthy_model_indexes_during_the_extraction_pass(rt: Runtime):
+    """正常情况下向量跟着整理走 —— 放在对话里编码就是每轮几十毫秒的首字延迟。"""
+    w = MemoryWorker()
+    say(UID, "我家猫叫团子")
+    with using(Runtime(config=rt.config, embedder=MockEmbedder())):
+        out = w.extract_uid(
+            UID,
+            call=lambda _m: facts_json(
+                {
+                    "predicate": "养的猫叫",
+                    "object": "团子",
+                    "quote": "我家猫叫团子",
+                    "turn_ref": "T-000001",
+                }
+            ),
+        )
+    assert out["vectors"]["encoded"] == 1
+    assert w._vector_backlog == set()
+    assert vector_count(UID) == 1
+
+
+def test_the_backlog_rotates_so_stuck_uids_do_not_block_the_queue(rt: Runtime, monkeypatch):
+    """持续失败的那些 uid 会永远占着前 SCAN_BATCH 个名额 —— 排在后面的
+    欠账一次都补不上，而表现只是「召回差一点」，不报错。
+    """
+    w = MemoryWorker()
+    w.SCAN_BATCH = 1
+    w._vector_backlog = {"stuck-a", "stuck-b", "stuck-c"}
+    seen: list[str] = []
+
+    class Stuck(MockEmbedder):
+        def encode(self, texts):
+            return None  # 永远编不出来（比如模型在、但输入格式不对）
+
+    monkeypatch.setattr(
+        "changqing.worker.reindex", lambda uid, **kw: seen.append(uid) or {"ok": False}
+    )
+    with using(Runtime(config=rt.config, embedder=Stuck())):
+        for _ in range(3):
+            w._ensure_vectors()
+    assert sorted(seen) == ["stuck-a", "stuck-b", "stuck-c"], (
+        "轮转之后三个都轮到过，谁也不占着名额不放"
+    )
 
 
 # ---------------------------------------------------------------- L0 归档

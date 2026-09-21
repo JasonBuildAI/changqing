@@ -44,7 +44,7 @@ from .extract import (
     resolve_ops,
     verify,
 )
-from .ports import LLMNotConfigured
+from .ports import LLMNotConfigured, embedder_enabled
 from .runtime import runtime
 from .store import (
     append_op,
@@ -59,6 +59,7 @@ from .store import (
     update_state,
 )
 from .tokenize import warm as warm_tokenizer
+from .vectors import reindex
 
 # 一次送给模型多少轮。太大 => prompt 长、抽取质量下降；太小 => 调用次数上升。
 CHUNK_TURNS = 40
@@ -173,6 +174,9 @@ class MemoryWorker:
         self._disk_at = 0  # 磁盘欠账的轮转游标（见 _sweep_disk）
         self._disk_uids: list[str] = []  # 磁盘上的 uid 清单（带 TTL 缓存）
         self._disk_listed_at = 0.0
+        self._vec_at = 0  # 补向量的轮转游标（见 _ensure_vectors）
+        # 整理时模型还没就绪、向量欠着的那批 uid（见 _ensure_vectors）
+        self._vector_backlog: set = set()
 
     # ---------------------------------------------------------- 生命周期
     def start(self) -> None:
@@ -217,6 +221,12 @@ class MemoryWorker:
                 except Exception as e:  # noqa: BLE001  后台任务不许把进程带走
                     self._last[uid] = {"ok": False, "error": str(e)}
                     self._last_at[uid] = time.time()
+            else:
+                # 队列空转（30 秒没人要整理）＝ 没人等着，正好把两件欠账补上：
+                # 磁盘上「早就该整理却没人再来」的，以及模型晚到导致的向量欠账。
+                # 两件都属于「没人等着时才做」的活，所以同居这一支。
+                self._ensure_vectors()
+                self._sweep_disk()
             # 顺手看一眼「静默触发」：用户不说了，正是把这段对话
             # 整理成事实的时机（条件 a）。队列空转时做，不占额外线程。
             self._sweep_idle()
@@ -276,7 +286,46 @@ class MemoryWorker:
             with contextlib.suppress(Exception):
                 self.maybe_extract(uid)
 
-    # ---------------------------------------------------------- 磁盘欠账
+    # ---------------------------------------------------------- 欠账
+    def _ensure_vectors(self) -> None:
+        """把欠着的向量索引补上（模型晚到、或整理时模型还没就绪）。
+
+        **为什么需要它**：模型只由宿主自己的预热去准备。启动时没网、或运维事后
+        才把模型文件放好，那几轮整理就会把向量欠着 —— 而「向量少了」是**静默**的：
+        召回率变差，没有任何报错。在这里补，成本可控：一次最多补 SCAN_BATCH 个
+        uid，不跟正常整理抢时间。
+
+        **要轮转**：取 `list(self._vector_backlog)[:SCAN_BATCH]` 的话，集合没变时
+        每次都取同一批，于是**持续失败**的那些 uid（模型在、但这几条编不出来）
+        会永远占着那前 32 个名额，排在后面的欠账一次都补不上，而表现只是
+        「召回差一点」，不报错。与 `_sweep_idle` 同一条教训。
+        """
+        if not _cfg().enabled:
+            return
+        try:
+            emb = runtime().embedder
+            if not embedder_enabled(emb):
+                return
+            if not self._vector_backlog:
+                return  # 没有欠账就什么都不做（含不碰任何模型）
+            # **只读本地地问**，绝不去加载模型：这是唯一那条整理线程，
+            # 一次加载最坏几十秒，卡住的是整条整理队列（所有用户）。
+            # 加载只归宿主的预热；预热还没好就继续欠着。
+            if not emb.ready(False):
+                return
+            uids = list(self._vector_backlog)
+            start = self._vec_at % len(uids)
+            batch = uids[start : start + self.SCAN_BATCH]
+            self._vec_at = start + len(batch)
+            for uid in batch:
+                if self._stop.is_set():
+                    return
+                out = reindex(uid)
+                if out.get("ok"):
+                    self._vector_backlog.discard(uid)
+        except Exception:  # noqa: BLE001  派生层坏了不该带走后台线程
+            pass
+
     def _disk_uid_list(self) -> list[str]:
         """磁盘上所有 uid 目录的清单（带 TTL 缓存，见 `DISK_LIST_TTL`）。
 
@@ -541,6 +590,18 @@ class MemoryWorker:
                     out["consolidate"] = consolidate(uid)
                 except Exception as e:  # noqa: BLE001
                     out["consolidate"] = {"ok": False, "error": str(e)}
+                # 向量索引跟着事实走。**放在整理这一侧**是设计决定：事实刚被冲突
+                # 消解 / 巩固过，这里编码一次就是最新的；换成在对话里编码，
+                # 每轮要多花几十毫秒，而那是首字延迟。
+                try:
+                    out["vectors"] = reindex(uid)
+                except Exception as e:  # noqa: BLE001
+                    out["vectors"] = {"ok": False, "error": str(e)}
+                if out["vectors"].get("ok"):
+                    self._vector_backlog.discard(uid)
+                elif out["vectors"].get("reason") == "embed_unavailable":
+                    # 模型还没就绪：先欠着，等模型好了由 `_ensure_vectors` 补
+                    self._vector_backlog.add(uid)
             out["ok"] = True
         except Exception as e:  # noqa: BLE001
             out["error"] = str(e)
