@@ -1,0 +1,545 @@
+{
+ "_note": "从本库被抽出之前的那份参考实现跑出来的固定输出，供 tests/test_goldens.py 比对。字段名 her_attention 在冻结时改成了 persona_attention（本库的有意改名）。",
+ "expected": {
+  "absolutize": [
+   "我家猫叫团子，三岁了",
+   "他养了一只叫团子的猫",
+   "2026-09-21",
+   "",
+   "abcdef",
+   "他说的「原话」里带引号和，逗号。",
+   "line1\nline2",
+   "一部老电影"
+  ],
+  "card_text": "他养的猫叫团子",
+  "core_len": [
+   9,
+   10,
+   8,
+   0,
+   6,
+   14,
+   10,
+   5
+  ],
+  "escape": [
+   [
+    "我家猫叫团子，三岁了",
+    "我家猫叫团子，三岁了"
+   ],
+   [
+    "他养了一只叫团子的猫",
+    "他养了一只叫团子的猫"
+   ],
+   [
+    "2026-09-21",
+    "2026-09-21"
+   ],
+   [
+    "",
+    ""
+   ],
+   [
+    "abcdef",
+    "abcdef"
+   ],
+   [
+    "他说的「原话」里带引号和，逗号。",
+    "他说的「原话」里带引号和，逗号。"
+   ],
+   [
+    "line1\\nline2",
+    "line1\nline2"
+   ],
+   [
+    "一部老电影",
+    "一部老电影"
+   ]
+  ],
+  "estimate_tokens": [
+   7,
+   7,
+   7,
+   1,
+   5,
+   11,
+   8,
+   4
+  ],
+  "facts": [
+   [
+    "F-0003",
+    "active",
+    1
+   ],
+   [
+    "F-0001",
+    "active",
+    0
+   ],
+   [
+    "F-0004",
+    "active",
+    0
+   ],
+   [
+    "F-0005",
+    "forgotten",
+    0
+   ],
+   [
+    "F-0002",
+    "active",
+    0
+   ]
+  ],
+  "hot": [
+   "F-0003",
+   "F-0004",
+   "F-0001",
+   "F-0002"
+  ],
+  "parse_facts": [
+   [
+    {
+     "object": "团子",
+     "predicate": "养的猫叫",
+     "quote": "我家猫叫团子",
+     "subject": "他",
+     "turn_ref": "T-000001"
+    }
+   ],
+   [
+    {
+     "object": "香菜",
+     "predicate": "不吃"
+    }
+   ],
+   [],
+   [
+    {
+     "object": "团子"
+    }
+   ],
+   [],
+   [
+    {
+     "object": null,
+     "predicate": "x",
+     "quote": 1
+    }
+   ],
+   [
+    {
+     "due_day": "2026-09-24",
+     "kind": "deadline",
+     "text": "提醒他交稿"
+    },
+    {
+     "kind": "怪东西",
+     "text": "随便"
+    }
+   ],
+   []
+  ],
+  "parse_summary": [
+   "",
+   "聊了吃的",
+   "",
+   "",
+   "",
+   "",
+   "",
+   ""
+  ],
+  "parse_topics": [
+   [],
+   [
+    {
+     "due_day": "2026-10-01",
+     "kind": "share",
+     "ref": "",
+     "text": "问问他吃不吃辣"
+    }
+   ],
+   [],
+   [],
+   [],
+   [],
+   [
+    {
+     "due_day": "2026-09-24",
+     "kind": "share",
+     "ref": "",
+     "text": "提醒他交稿"
+    },
+    {
+     "due_day": "",
+     "kind": "share",
+     "ref": "",
+     "text": "随便"
+    }
+   ],
+   []
+  ],
+  "recall": {
+   "他要搬到哪里": [
+    "F-0003",
+    "F-0001",
+    "F-0004",
+    "F-0002"
+   ],
+   "周末有什么安排": [
+    "F-0003",
+    "F-0004"
+   ],
+   "团子": [
+    "F-0003",
+    "F-0001"
+   ],
+   "我不吃什么": [
+    "F-0003",
+    "F-0002"
+   ],
+   "我家猫叫什么": [
+    "F-0003",
+    "F-0001"
+   ]
+  },
+  "render": "# 关于他的事实（渲染视图，只读）\n\n> 这是从 log.jsonl 物化出来的视图，**不要手工编辑** —— 下次渲染会覆盖它。\n> 要改走编辑接口，由接口往日志追加一条操作。\n\n## 他要搬到杭州  (#F-0003 · active · 重要 0.8 · 她会在意 0.7 · 已钉住)\n\n- 2026-09-03 他说：「我下周要搬到杭州去」  (T-000005)\n\n## 他养的猫叫团子  (#F-0001 · active · 重要 0.6 · 她会在意 0.5)\n\n- 2026-09-01 他说：「我家猫叫团子」  (T-000001)\n\n## 他答应周末去看展  (#F-0004 · active · 重要 0.5 · 她会在意 0.5)\n\n- 2026-09-04 他说：「周末带你去」  (T-000007)\n\n## 他不吃芹菜  (#F-0002 · active · 重要 0.4 · 她会在意 0.3)\n\n- 2026-09-02 他说：「我不吃香菜」  (T-000003)\n",
+  "resolve_ops": [
+   [
+    {
+     "id": "F-0001",
+     "object": "团子",
+     "op": "ADD",
+     "predicate": "养的猫叫",
+     "subject": "他"
+    },
+    {
+     "id": "F-0002",
+     "object": "团子（三岁）",
+     "op": "SUPERSEDE",
+     "predicate": "养的猫叫",
+     "replaces": "F-0001",
+     "subject": "他"
+    },
+    {
+     "id": "F-0003",
+     "object": "香菜",
+     "op": "ADD",
+     "predicate": "不吃",
+     "subject": "他"
+    }
+   ],
+   [
+    "ADD",
+    "SUPERSEDE",
+    "NOOP"
+   ]
+  ],
+  "rrf": {
+   "a": 0.01639344262295082,
+   "b": 0.03252247488101534,
+   "c": 0.04839549075403121,
+   "d": 0.015873015873015872
+  },
+  "similar": [
+   [
+    1.0,
+    1.0,
+    0.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ]
+  ],
+  "user_rounds_of": [
+   3,
+   4,
+   0,
+   0
+  ],
+  "verify": [
+   [
+    "active",
+    1.0
+   ],
+   [
+    "pending",
+    1.0
+   ],
+   [
+    "drop",
+    0.0
+   ],
+   [
+    "drop",
+    0.0
+   ],
+   [
+    "active",
+    1.0
+   ]
+  ]
+ },
+ "fixtures": {
+  "batch": [
+   {
+    "object": "团子",
+    "predicate": "养的猫叫",
+    "subject": "他"
+   },
+   {
+    "object": "团子",
+    "predicate": "养的猫叫",
+    "subject": "他"
+   },
+   {
+    "object": "团子（三岁）",
+    "predicate": "养的猫叫",
+    "subject": "他"
+   },
+   {
+    "object": "香菜",
+    "predicate": "不吃",
+    "subject": "他"
+   }
+  ],
+  "cands": [
+   {
+    "object": "团子",
+    "predicate": "养的猫叫",
+    "quote": "我家猫叫团子",
+    "subject": "他",
+    "turn_ref": "T-000001"
+   },
+   {
+    "object": "团子",
+    "predicate": "养的猫叫",
+    "quote": "我家猫叫猫",
+    "subject": "他",
+    "turn_ref": "T-000001"
+   },
+   {
+    "object": "团子",
+    "predicate": "养的猫叫",
+    "quote": "我家猫叫团子",
+    "subject": "他",
+    "turn_ref": "T-999999"
+   },
+   {
+    "object": "周末去看展",
+    "predicate": "答应",
+    "quote": "周末带你去看展",
+    "subject": "她",
+    "turn_ref": "T-000002"
+   },
+   {
+    "object": "香菜",
+    "predicate": "不吃",
+    "quote": "我不吃香菜",
+    "subject": "他",
+    "turn_ref": "T-000003"
+   }
+  ],
+  "corpus": [
+   "我家猫叫团子，三岁了",
+   "他养了一只叫团子的猫",
+   "2026-09-21",
+   "",
+   "abcdef",
+   "他说的「原话」里带引号和，逗号。",
+   "line1\nline2",
+   "一部老电影"
+  ],
+  "fact": {
+   "confidence": 0.9,
+   "id": "F-0001",
+   "importance": 0.6,
+   "kind": "fact",
+   "object": "团子",
+   "persona_attention": 0.5,
+   "pinned": 0,
+   "predicate": "养的猫叫",
+   "quote": "我家猫叫团子",
+   "status": "active",
+   "subject": "他",
+   "turn_ref": "T-000001",
+   "valid_from": "2026-09-01"
+  },
+  "ops": [
+   {
+    "confidence": 0.9,
+    "id": "F-0001",
+    "importance": 0.6,
+    "kind": "fact",
+    "object": "团子",
+    "op": "ADD",
+    "persona_attention": 0.5,
+    "predicate": "养的猫叫",
+    "quote": "我家猫叫团子",
+    "subject": "他",
+    "turn_ref": "T-000001",
+    "valid_from": "2026-09-01"
+   },
+   {
+    "confidence": 0.9,
+    "id": "F-0002",
+    "importance": 0.4,
+    "kind": "fact",
+    "object": "香菜",
+    "op": "ADD",
+    "persona_attention": 0.3,
+    "predicate": "不吃",
+    "quote": "我不吃香菜",
+    "subject": "他",
+    "turn_ref": "T-000003",
+    "valid_from": "2026-09-02"
+   },
+   {
+    "confidence": 0.95,
+    "id": "F-0003",
+    "importance": 0.8,
+    "kind": "fact",
+    "object": "杭州",
+    "op": "ADD",
+    "persona_attention": 0.7,
+    "predicate": "要搬到",
+    "quote": "我下周要搬到杭州去",
+    "subject": "他",
+    "turn_ref": "T-000005",
+    "valid_from": "2026-09-03"
+   },
+   {
+    "confidence": 0.9,
+    "due": "2026-09-27",
+    "id": "F-0004",
+    "importance": 0.5,
+    "kind": "commitment",
+    "object": "周末去看展",
+    "op": "ADD",
+    "persona_attention": 0.5,
+    "predicate": "答应",
+    "quote": "周末带你去",
+    "subject": "他",
+    "turn_ref": "T-000007",
+    "valid_from": "2026-09-04"
+   },
+   {
+    "confidence": 0.8,
+    "id": "F-0005",
+    "importance": 0.5,
+    "kind": "fact",
+    "object": "团子（三岁）",
+    "op": "ADD",
+    "persona_attention": 0.5,
+    "predicate": "养的猫叫",
+    "quote": "团子三岁了",
+    "subject": "他",
+    "turn_ref": "T-000009",
+    "valid_from": "2026-09-05"
+   },
+   {
+    "id": "F-0002",
+    "op": "EDIT",
+    "set": {
+     "object": "芹菜"
+    }
+   },
+   {
+    "id": "F-0003",
+    "op": "PIN",
+    "pinned": 1
+   },
+   {
+    "id": "F-0005",
+    "mode": "archive",
+    "op": "FORGET"
+   }
+  ],
+  "pairs": [
+   [
+    "养的猫叫团子",
+    "养的猫叫团子"
+   ],
+   [
+    "养的猫叫团子",
+    "养的猫叫团子（三岁）"
+   ],
+   [
+    "养的猫叫团子",
+    "不吃香菜"
+   ],
+   [
+    "一部老电影",
+    "另一部老电影"
+   ],
+   [
+    "",
+    ""
+   ],
+   [
+    "香菜。",
+    "香菜"
+   ],
+   [
+    "团子",
+    "团子（三岁）"
+   ]
+  ],
+  "queries": [
+   "我家猫叫什么",
+   "我不吃什么",
+   "他要搬到哪里",
+   "周末有什么安排",
+   "团子"
+  ],
+  "raws": [
+   "{\"facts\": [{\"subject\": \"他\", \"predicate\": \"养的猫叫\", \"object\": \"团子\", \"quote\": \"我家猫叫团子\", \"turn_ref\": \"T-000001\"}]}",
+   "{\"facts\": [{\"predicate\": \"不吃\", \"object\": \"香菜\"}], \"summary\": \"聊了吃的\", \"topics\": [{\"kind\": \"share\", \"text\": \"问问他吃不吃辣\", \"due_day\": \"2026-10-01\"}]}",
+   "```json\n{\"facts\": []}\n```",
+   "{\"facts\": [{\"object\": \"团子\",}]}",
+   "不是 json",
+   "{\"facts\": [{\"predicate\": \"x\", \"object\": null, \"quote\": 1}]}",
+   "{\"topics\": [{\"kind\": \"deadline\", \"text\": \"提醒他交稿\", \"due_day\": \"2026-09-24\"}, {\"kind\": \"怪东西\", \"text\": \"随便\"}]}",
+   "{\"summary\": \"  \"}"
+  ],
+  "states": [
+   {
+    "rounds": 5,
+    "user_rounds": 3
+   },
+   {
+    "rounds": 4
+   },
+   {},
+   {
+    "rounds": 2,
+    "user_rounds": 0
+   }
+  ],
+  "turns": {
+   "T-000001": {
+    "day": "2026-09-01",
+    "id": "T-000001",
+    "role": "user",
+    "text": "我家猫叫团子"
+   },
+   "T-000002": {
+    "day": "2026-09-01",
+    "id": "T-000002",
+    "role": "assistant",
+    "text": "记住了"
+   },
+   "T-000003": {
+    "day": "2026-09-02",
+    "id": "T-000003",
+    "role": "user",
+    "text": "我不吃香菜"
+   }
+  },
+  "uid": "u1"
+ }
+}
