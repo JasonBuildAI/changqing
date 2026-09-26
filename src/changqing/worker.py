@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import contextlib
 import queue
-import re
 import threading
 import time
 from typing import Any
@@ -64,20 +63,15 @@ from .vectors import reindex
 # 一次送给模型多少轮。太大 => prompt 长、抽取质量下降；太小 => 调用次数上升。
 CHUNK_TURNS = 40
 
-# ---------------------------------------------------------------- 承诺行预筛
-# 「她答应过他的事」的**预筛**：从 L0 的 assistant 行里挑出可能带承诺 / 约定
-# 的那一小批夹进抽取请求。为什么预筛而不是全送：她的回复量是他说的话的好几倍，
-# 全送会把抽取 prompt 撑大几倍（每一分钱都在 8 次/场的硬上限里）；而判据不在这里、
-# 在抽取 prompt 的铁律与 `verify` 的 kind=promise 分支 —— 预筛宽一点
-# 只会多花一点上下文，抠紧却会**静默漏掉**真正的承诺（漏一条的表现只是
-# 「她忘了自己说过」，不报错、不进任何指标）。
-_HER_COMMIT_RE = re.compile(
-    r"答应|说好|一定|保证|"
-    r"[我带等你来][你去]|给你|帮你|陪你|送你|留给|带回|买给|"
-    r"周末|明天|后天|下次|改天|一起去"
-)
-_HER_COMMIT_MAX = 6  # 每个 chunk 最多夹入几条她的行（成本上界）
-_HER_COMMIT_CHARS = 120  # 每条最多截多长：超长的行基本是长篇自述，不是承诺
+# ---------------------------------------------------------------- 她的行
+# 送给模型的行走列 = 本段 user 轮全送 + 夹在中间**她的整行**，预筛只剩长度与
+# 条数两个上界。为什么不再按关键词挑：抽取口径已经扩到「她自己的事」
+# （偏好 / 习惯 / 正在做的事 / 承诺），而「我平时都喝美式」这类句子**一个承诺词
+# 都没有** —— 关键词预筛会把它们整批漏掉，表现正是她今天说爱喝美式、明天说
+# 从来不喝咖啡。判据不在这里，在抽取 prompt 的铁律与 `verify` 的 subject=她
+# 分支：预筛宽一点只多花一点上下文，抠紧却是**静默漏抽**。
+_HER_LINES_MAX = 16  # 每个 chunk 最多夹入几条她的行（成本上界）
+_HER_LINE_CHARS = 160  # 每条最多截多长：她的长回复后半段基本是语气词，不是事实
 
 
 def _cfg() -> MemoryConfig:
@@ -86,12 +80,13 @@ def _cfg() -> MemoryConfig:
 
 
 def _lines_for_model(all_turns: list[dict], chunk: list[dict]) -> list[dict]:
-    """这一段送给模型的行走列：本段 user 轮全送 + 夹在中间「她说过的承诺行」。
+    """这一段送给模型的行走列：本段 user 轮全送 + 夹在中间「她自己的行」。
 
     归属规则：**她的行跟随它前面最近的那个 user 轮** —— 那个 user 轮在本段，
     这一行就进本段；在上一段（或用户本轮之后、下一段之前）就进对应那一段。
-    这样最后一个 chunk 会带上 L0 尾部的她的行（用户说完最后一句、她回复、
-    然后就没声了 —— 那正是承诺最容易出现的位置）。
+    她的行超过 `_HER_LINES_MAX` 时**丢最旧的那几条**（不是最新的）：用户说完
+    最后一句、她回复、然后就没声了 —— 她答应过什么最容易出现在这个位置，
+    而最后一个 chunk 正好要吃住 L0 的尾巴。最新的一批也最可能被下一场提起。
 
     **游标单位不受影响**：返回的只是「送给模型的行」，游标推进用的是 chunk
     （user 轮）。两件事混在一起会把游标推快 —— 表现是「她再也想不起他刚说的话」。
@@ -99,7 +94,8 @@ def _lines_for_model(all_turns: list[dict], chunk: list[dict]) -> list[dict]:
     if not chunk:
         return []
     ids = {str(t.get("id")) for t in chunk}
-    lines: list[dict] = []
+    kept: list[dict] = []
+    is_her: list[bool] = []
     n_her = 0
     seg_open = False  # 当前行是否属于本段（最近一个 user 轮在不在本段）
     for t in all_turns:
@@ -107,18 +103,27 @@ def _lines_for_model(all_turns: list[dict], chunk: list[dict]) -> list[dict]:
         if role == "user":
             seg_open = str(t.get("id")) in ids
             if seg_open:
-                lines.append(t)
+                kept.append(t)
+                is_her.append(False)
             continue
-        if not seg_open or role != "assistant" or n_her >= _HER_COMMIT_MAX:
+        if not seg_open or role != "assistant":
             continue
         text = str(t.get("text") or "")
-        if not _HER_COMMIT_RE.search(text):
-            continue
-        # 截断而不是丢弃：承诺句通常在前半段（角色是先答应、再解释），
+        # 截断而不是丢弃：值得记的东西通常在前半段（她是先答应、再解释），
         # 截掉的长尾基本是长篇自述。
-        lines.append(dict(t, text=text[:_HER_COMMIT_CHARS]) if len(text) > _HER_COMMIT_CHARS else t)
+        kept.append(dict(t, text=text[:_HER_LINE_CHARS]) if len(text) > _HER_LINE_CHARS else t)
+        is_her.append(True)
         n_her += 1
-    return lines
+    if n_her <= _HER_LINES_MAX:
+        return kept
+    drop = n_her - _HER_LINES_MAX
+    out: list[dict] = []
+    for t, her in zip(kept, is_her, strict=True):
+        if her and drop > 0:  # 从最旧的开始丢
+            drop -= 1
+            continue
+        out.append(t)
+    return out
 
 
 def user_rounds_of(st: dict) -> int:
@@ -496,8 +501,8 @@ class MemoryWorker:
 
             # 只拿用户说的话当**游标与切片**的依据：抽取的第一条铁律就是
             # 「她说的事实不算」，在这里先把它们滤掉，模型连看都看不到，省得它犯规。
-            # 但她的行不丢：可能带承诺的那些由 `_lines_for_model` 夹回请求里
-            # （铁律 2 的唯一来源，缺了它「她答应过他的事」永远进不了库）。
+            # 但她的行不丢：`_lines_for_model` 会整行夹回请求里（她自己的事
+            # 只存在于她的行里，缺了它「她答应过他的事」永远进不了库）。
             # **读在早返回之前**：漂移只有拿 L0 的真实长度才看得出来，
             # 放在后面的话 `rounds_total <= done` 那条早返回会把漂移藏起来。
             all_turns = read_turns(uid)
@@ -540,7 +545,7 @@ class MemoryWorker:
                 if calls > cfg.extract_max_calls:
                     break  # 硬上限，写死
                 chunk = pending[offset : offset + CHUNK_TURNS]  # user 轮（游标单位）
-                # 送给模型的是「本段 user 轮 + 夹在中间她的承诺行」；
+                # 送给模型的是「本段 user 轮 + 夹在中间她的行」；
                 # `calls` / `written` 和切片都只数 user 轮 —— 她的行只进 prompt、
                 # 不进下标（混进去会把游标推快 = 静默漏抽他的话）。
                 lines = _lines_for_model(all_turns, chunk)
@@ -611,7 +616,7 @@ class MemoryWorker:
     def _call_extract(
         self, lines: list[dict], call: Any = None, out: dict | None = None
     ) -> str | None:
-        """一次抽取调用。`lines` 是给模型的那批行（含夹回来的她的承诺行）。
+        """一次抽取调用。`lines` 是给模型的那批行（含夹回来的她的行）。
 
         返回值分三种，调用方必须区分 —— 混在一起会造成**静默丢数据**：
           None  这次调用**失败**了 → 不许推进游标，下次重试

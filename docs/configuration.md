@@ -99,7 +99,7 @@ cfg = MemoryConfig(root="./data", hot_tokens=200)  # 或者直接写死
 | `max_turns` | `CHANGQING_MAX_TURNS` | `200` | 距上次整理累计这么多轮也整理一次：长对话中途也要落一次 |
 | `extract_max_calls` | `CHANGQING_EXTRACT_MAX_CALLS` | `8` | **单场对话**的整理调用上限。没有它，一次整理会按轮数把账单乘上去 |
 | `extract_model` | `CHANGQING_EXTRACT_MODEL` | 空 | 抽取用哪个模型。留空 = 交给注入的 `LLM` 自己决定 |
-| `extract_tokens_per_turn` | `CHANGQING_EXTRACT_TOKENS_PER_TURN` | `160` | 折算一次整理要读多少 token 的输入 |
+| `extract_tokens_per_turn` | `CHANGQING_EXTRACT_TOKENS_PER_TURN` | `200` | 折算一次整理要读多少 token 的输入。一批里也夹着她的行，每条都可能多吐一条 `subject=她` 的事实，所以比只算他的话时留得多 |
 | `extract_max_tokens` | `CHANGQING_EXTRACT_MAX_TOKENS` | `8000` | 单次整理的输出上限 |
 | `consolidate_days` | `CHANGQING_CONSOLIDATE_DAYS` | `90` | 多久没被用过的事实开始衰减 |
 | `decay_floor` | `CHANGQING_DECAY_FLOOR` | `0.05` | 衰减的下限。**不取 0**：降到 0 等于判死，之后永远注入不进来 |

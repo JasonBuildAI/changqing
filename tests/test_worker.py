@@ -26,7 +26,13 @@ from changqing.store import (
     read_turns,
     update_state,
 )
-from changqing.worker import CHUNK_TURNS, MemoryWorker, user_rounds_of
+from changqing.worker import (
+    _HER_LINE_CHARS,
+    _HER_LINES_MAX,
+    CHUNK_TURNS,
+    MemoryWorker,
+    user_rounds_of,
+)
 from changqing.worker import _lines_for_model as lines_for_model
 
 UID = "u" + "b" * 16
@@ -74,29 +80,38 @@ def test_her_lines_follow_the_user_turn_before_them(rt: Runtime):
     ]
     chunk = [turns[0]]
     got = [t["id"] for t in lines_for_model(turns, chunk)]
-    assert got == ["T-000001", "T-000002"], "本段的 user 轮 + 它后面她的承诺行"
+    assert got == ["T-000001", "T-000002"], "本段的 user 轮 + 它后面她的行"
 
 
-def test_her_lines_are_only_added_when_they_look_like_a_promise(rt: Runtime):
-    """预筛宽一点只多花一点上下文，抠紧会**静默漏掉**真正的承诺。"""
+def test_her_lines_ride_along_whatever_she_said(rt: Runtime):
+    """她的**整行**都进请求，预筛只剩长度与条数两个上界。
+
+    关键词预筛看不见「我平时都喝美式」这类句子（一个承诺词都没有），而她的偏好
+    只存在于她的行里 —— 漏掉的表现正是她今天说爱喝美式、明天说从来不喝咖啡。
+    """
     turns = [
         {"id": "T-000001", "role": "user", "text": "在吗"},
         {"id": "T-000002", "role": "assistant", "text": "在的，今天画了一下午"},
     ]
-    assert [t["id"] for t in lines_for_model(turns, [turns[0]])] == ["T-000001"], (
-        "不带承诺味道的她的行不进 prompt"
+    assert [t["id"] for t in lines_for_model(turns, [turns[0]])] == ["T-000001", "T-000002"], (
+        "没有承诺词的她的行也要进 prompt"
     )
 
 
-def test_her_lines_are_capped_and_truncated(rt: Runtime):
-    """上限是成本上界：一场对话里她的回复量是他说的话的好几倍。"""
+def test_her_lines_are_capped_truncated_and_drop_the_oldest(rt: Runtime):
+    """上限是成本上界：一场对话里她的回复量是他说的话的好几倍。
+
+    超过条数上界时丢**最旧**的那几条：她刚说的那段才最可能被下一场提起。
+    """
     turns = [{"id": "T-000000", "role": "user", "text": "在吗"}]
-    for i in range(1, 12):
-        turns.append({"id": f"T-{i:06d}", "role": "assistant", "text": "我明天给你带" + "话" * 300})
+    for i in range(1, _HER_LINES_MAX + 4):
+        turns.append({"id": f"T-{i:06d}", "role": "assistant", "text": f"我第{i}条。" + "话" * 300})
     got = lines_for_model(turns, [turns[0]])
     her = [t for t in got if t["role"] == "assistant"]
-    assert len(her) == 6, "每个 chunk 最多夹 6 条她的行"
-    assert all(len(t["text"]) == 120 for t in her), "超长的截断，不是整条丢掉"
+    assert len(her) == _HER_LINES_MAX, f"每个 chunk 最多夹 {_HER_LINES_MAX} 条她的行"
+    assert all(len(t["text"]) == _HER_LINE_CHARS for t in her), "超长的截断，不是整条丢掉"
+    assert her[0]["id"] == f"T-{4:06d}", "丢的是最旧的那几条"
+    assert her[-1]["id"] == f"T-{_HER_LINES_MAX + 3:06d}", "最新的一条必须留住"
 
 
 def test_rounds_are_never_counted_from_her_side(rt: Runtime):
@@ -195,6 +210,53 @@ def test_a_second_run_has_nothing_left_to_do(rt: Runtime):
     again = w.extract_uid(UID, call=lambda _m: raw)
     assert again["calls"] == 0, "没有新话要抽"
     assert len(list_facts(UID)) == 1, "事实没有翻倍"
+
+
+def test_her_own_fact_lands_with_her_as_subject(rt: Runtime):
+    """她自己的偏好也进事实层，`subject` 是「她」（铁律 1）。
+
+    这是她「前后不一致」的正解：库里没有立足点时，她每一场对同一件事的说法
+    都只靠这一轮上下文发挥 —— 今天说爱喝美式、明天说从来不喝咖啡。
+    """
+    say(UID, "你平时喝什么", "我平时都喝美式。")
+    her = next(t for t in read_turns(UID) if t["role"] == "assistant")
+    raw = facts_json(
+        {
+            "subject": "她",
+            "predicate": "平时都喝",
+            "object": "美式",
+            "quote": "我平时都喝美式",
+            "turn_ref": her["id"],
+        }
+    )
+    out = MemoryWorker().extract_uid(UID, call=lambda _m: raw)
+    assert out["active"] == 1, f"她自己的事实要落进事实层（实际 {out}）"
+    fact = list_facts(UID)[0]
+    assert fact["subject"] == "她" and fact["kind"] == "fact", f"subject=她、kind 不变：{fact}"
+    assert fact["turn_ref"] == her["id"], "回引的是她自己那一行"
+
+
+def test_her_restating_him_is_not_a_fact(rt: Runtime):
+    """她复述他的话**不许**变成事实 —— 那是把他的信息反向当成她提供的。
+
+    「你上次说你不吃香菜」与她真说了「我不吃香菜」在文本上分不开，所以判据只在
+    prompt 的铁律 2 里；模型犯规时，回引到她那一轮仍会被 `verify` 丢掉
+    （他的信息只能从他的行里抽）。
+    """
+    say(UID, "我不吃香菜", "你上次说你不吃香菜。")
+    her = next(t for t in read_turns(UID) if t["role"] == "assistant")
+    raw = facts_json(
+        {
+            "subject": "他",
+            "predicate": "不吃",
+            "object": "香菜",
+            "quote": "你上次说你不吃香菜",
+            "turn_ref": her["id"],
+        }
+    )
+    out = MemoryWorker().extract_uid(UID, call=lambda _m: raw)
+    assert out["active"] == 0, f"她复述他的话不许落库（实际 {out}）"
+    assert list_facts(UID) == [], "事实层里一条都不该有"
 
 
 def test_a_failed_call_does_not_advance_the_cursor(rt: Runtime):

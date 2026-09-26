@@ -13,8 +13,10 @@
                   既放过「我最近在接私活，画插画那种」→「职业：插画师」这种合理
                   转述，也挡住「上下文里碰巧出现过这个词」这种巧合命中。
                   命中 → `active`；近似 → `pending`（待确认，**不丢**）；对不上 → 丢弃
-  闸 3 角色归属   他说的话才算事实；她的行**只收 `kind=promise`**（她答应他的事）。
-                  不放宽这一条，「她答应过他的事」永远进不了库
+  闸 3 角色归属   他说的话才算事实；她的行只收**她自己的事** —— `kind=promise`
+                  （她答应他的事）与 `subject=她`（她的偏好、习惯、正在做的事）。
+                  不放宽这两格，「她答应过他的事」永远进不了库，而她会在
+                  「爱喝美式」与「从来不喝咖啡」之间反复
   闸 4 时间绝对化  相对时间词按那一轮的**时间戳**换算成绝对日期再落盘 ——
                   模型不知道今天是几号，它写的「上周五」是编的
 
@@ -43,32 +45,43 @@ from .tokenize import tokenize
 _PERSONA = "{persona}"
 _ATTENTION = "{attention}"
 
-EXTRACT_SYSTEM = """你是一个严谨的信息抽取器。你的唯一任务是从对话里抽出**用户亲口说过的、关于他自己的**事实。
+EXTRACT_SYSTEM = """你是一个严谨的信息抽取器。你的唯一任务是从对话里抽出**两个人各自值得长期记住的事**：
+他的（行首是「他说：」）与她自己的（行首是「她说：」）。
 
 铁律：
-1. **事实**只从他说的（行首是「他说：」）的话里抽。她说的一律不算事实 —— 哪怕她是在复述他、
-   哪怕她说的是「你上次说你不吃香菜」。
-2. **恰好一条例外：她答应他的事。** 只从行首是「她说：」的行里抽，`kind=promise`、
-   `subject` 填「她」、`quote` 用她那句话的原文片段（一字不改）。这是「她答应过他的事」
-   进库的唯一来源 —— 她说了「周末带你去看展」，之后她必须记得自己说过。
-   他答应的事是 `kind=commitment`（只从他的行抽），两者绝不要混。
+1. **事实分两类，看行首。** 行首是「他说：」的行抽**他的**事（`subject` 填「他」）；
+   行首是「她说：」的行抽**她自己的**事（`subject` 填「她」）—— 她答应过他的事、
+   她的偏好、习惯、正在做的事。两块都抽，谁也不能漏。
+2. **她的行里只抽关于她自己的内容。** 她复述他的话不是新信息，一律不算 ——
+   「你上次说你不吃香菜」「我记得你不吃香菜」都不是事实（那条本来就该从他的行里抽）。
+   判据只有一句：这句话说的是她自己吗？
 3. 每条事实必须附 `turn_ref`（那一轮的编号，如 T-000123）和 `quote`（**原文片段，一字不改**）。
    找不到原文片段就不要输出这一条。
 4. **宁少勿错。** 没有值得记住的事实就返回空数组 []，这是完全合格的答案。
    推测、脑补、把两个轮次的信息拼在一起，都是严重错误。
-5. 不要抽：**一时的情绪**（「今天好累」「烦死了」这种说过就过去的）、她说过的话（除了铁律 2 的承诺）、
-   你已经抽过的同一条事实。
-   **但要抽**：长期的偏好、习惯、恐惧、身体状况、家里人、承诺与约定。
-   「我有点怕黑」「我不吃香菜」「我妈身体不好」「我周末得加班」都是要记很久的，
+5. 不要抽：**一时的情绪**（「今天好累」「烦死了」这种说过就过去的）、你已经抽过的同一条事实。
+    **但要抽**：他长期的偏好、习惯、恐惧、身体状况、家里人、承诺与约定；
+   以及**她自己的**偏好、习惯、正在做的事、**去过的地方 / 经历**、答应过他的事 ——
+   自己的事一条都没记住的话，
+   她会今天说爱喝美式、明天说从来不喝咖啡，而聊天里的自相矛盾全从这里来。
+   **「她自己的」这条放宽不包括情绪和眼下的状态**：「今天好累」「烦死了」——
+   他说的、她说的，都不算事实（说过就过去的东西记下来，只会让她隔天还在问）。
+   「我有点怕黑」「我不吃香菜」「我妈身体不好」「我周末得加班」「我上个月去了苏州」
+   都是要记很久的，
    不要因为「听起来像在说情绪」就漏掉 —— 漏掉这类比多抽一条一次性的情绪糟得多。
-6. subject 固定用「他」（kind=promise 时用「她」）；predicate 要写成能和 subject、object 连成一句通顺中文的动词短语
+6. `subject` 只用两个值：他的行填「他」、她的行填「她」（`kind=promise` 一律是「她」，
+   落库前也会按这一条强制）；predicate 要写成能和 subject、object 连成一句通顺中文的动词短语
    （例：subject=他, predicate=养的猫叫, object=团子 → 「他养的猫叫团子」）。
+   **她的行里「我」指的是她自己**：predicate / object 里不要再留「我 / 我的」
+   （留着会让读卡片的人以为那是他的东西）——写成「她的」或直接省略：
+   「我吃不了辣」→ subject=她, predicate=吃不了, object=辣。
    **没有宾语的事实把内容整段写进 predicate、object 留空字符串**（例：subject=他,
    predicate=怕黑, object="" → 「他怕黑」）。反过来把内容塞进 object、让 predicate
    空着是不合格的 —— 那样的提取结果会被丢弃。
-7. `kind` 三选一：`fact`（关于他的信息）、`commitment`（**他答应的事、约定、
-   待办**，例如「这周末带你去看展」）、`promise`（**她答应的事**，只从「她说：」的行抽，
-   见铁律 2）。承诺类一定要标对 —— 它们会被单独顶到注入集合的前面，不能被普通信息挤掉。
+7. `kind` 三选一：`fact`（信息 —— 他的或她自己的，看行首）、`commitment`（**他答应的事、
+   约定、待办**，例如「这周末带你去看展」，只从他的行抽）、`promise`（**她答应的事**，
+   只从「她说：」的行抽）。承诺类一定要标对 —— 它们会被单独顶到注入集合的前面，
+   不能被普通信息挤掉。
 8. `due` 只在承诺类**明确说出了时间**时给：把「这周末」「下周三」按下面给的
    今天换算成 YYYY-MM-DD；说不清的就给 null，不要猜。
 9. 只输出一个 JSON 对象，字段是 `facts`、`summary` 与 `topics`，不要在围栏之外写任何文字。
@@ -85,7 +98,10 @@ EXTRACT_SYSTEM = """你是一个严谨的信息抽取器。你的唯一任务是
   "facts": [
     {"turn_ref":"T-000123","quote":"我家猫叫团子，三岁了","subject":"他",
      "predicate":"养的猫叫","object":"团子","kind":"fact","due":null,
-     "confidence":0.95,"importance":0.7,"persona_attention":0.8}
+     "confidence":0.95,"importance":0.7,"persona_attention":0.8},
+    {"turn_ref":"T-000123","quote":"我平时都喝美式","subject":"她",
+     "predicate":"平时都喝","object":"美式","kind":"fact","due":null,
+     "confidence":0.9,"importance":0.5,"persona_attention":0.6}
   ],
   "summary": "他养了只三岁的猫叫团子。",
   "topics": [
@@ -98,8 +114,8 @@ EXTRACT_SYSTEM = """你是一个严谨的信息抽取器。你的唯一任务是
 
 每条事实的字段：
   turn_ref     必需，那一轮的编号
-  quote        必需，用户原话片段
-  subject      通常就是「他」
+  quote        必需，被回引那一轮里的原文片段
+  subject      「他」或「她」（看这句话说的是谁）
   predicate    动词短语
   object       具体内容
   kind         `fact` 或 `commitment`
@@ -117,8 +133,8 @@ EXTRACT_USER = """今天是 {today}。下面是这一段对话（编号 + 时间
 
 {lines}
 
-请抽取出值得长期记住的、关于他本人的事实（外加她答应过他的事，见铁律 2），
-并给这一段对话写一句纪要。
+请抽取出值得长期记住的事实 —— **他的**（「他说：」的行）与**她自己的**
+（「她说：」的行，见铁律 1 / 2），并给这一段对话写一句纪要。
 没有值得记的就返回 {{"facts": [], "summary": ""}}。"""
 
 
@@ -371,10 +387,14 @@ def verify(fact: dict, turns_by_id: dict[str, dict], tolerance: float = 0.0) -> 
     text = str(turn.get("text") or "")
     role = str(turn.get("role"))
     kind = str(fact.get("kind") or "").strip().lower()
-    # 他说的话默认收；她的话**只收 kind=promise**（她答应他的事，铁律 2）。
-    # 不放宽这一条的话，「她答应过他的事」永远进不了事实层 —— 她的承诺只存在于
-    # assistant 行里，一律 drop 的表现就是「她忘了自己答应过什么」。
-    if role != "user" and not (role == "assistant" and kind == "promise"):
+    # 他说的话默认收；她的话只收**她自己的事**：`subject=她`（她的偏好 / 习惯 /
+    # 在做什么，铁律 1）与 `kind=promise`（她的承诺，铁律 2）。
+    # 两格都要放宽：前者不管的话，她的偏好在库里没有立足点，表现是她今天说爱喝
+    # 美式、明天说从来不喝咖啡；后者不管的话，她的承诺只存在于 assistant 行里，
+    # 表现是「她忘了自己答应过什么」。**她复述他的话仍然一律 drop**（铁律 2）：
+    # 那是把她的转述反向当成他提供的信息。
+    her_own = kind == "promise" or str(fact.get("subject") or "").strip() == "她"
+    if role != "user" and not (role == "assistant" and her_own):
         return "drop", 0.0
     quote = str(fact.get("quote") or "").strip()
     if not quote:
@@ -394,18 +414,20 @@ _RANGES = {"confidence": (0.0, 1.0), "importance": (0.0, 1.0), "persona_attentio
 def clean_fact(fact: dict, turn: dict, persona: PersonaProfile | None = None) -> dict | None:
     """把一条原始抽取结果变成可以落盘的事实。缺关键字段就返回 None。
 
-    `persona` 决定承诺类事实的 `subject`（默认取运行期里那份画像）。
+    `persona` 决定**她那一侧**事实的 `subject`：承诺（`kind=promise`）与她自己的事
+    （`subject=她`）都收口到画像的称呼（默认取运行期里那份画像）。
     """
     kind = str(fact.get("kind") or "fact").strip().lower()
     if kind not in ("fact", "commitment", "promise"):
         kind = "fact"
-    # kind=promise（她答应的事）的 subject 统一成画像的称呼：它决定卡片的归属文案，
-    # 是**形状**而不是自由内容，不该交给模型发挥 —— 模型把 subject 写成「他」的话，
-    # 她会拿自己的承诺说成「你上次说……」，编出根本不存在的对话。
+    # subject 只有两个值（**形状**，不是自由内容）：她的行 → 画像的称呼，其余 → 「他」。
+    # 它决定卡片的归属文案，所以不收模型给的第三种写法 —— 模型把她的承诺写成「他」的话，
+    # 她会拿自己的承诺说成「你上次说……」，编出根本不存在的对话；反过来给「我们」
+    # 「大家」这种值也是错的（卡片会读成「我们养的猫叫团子」）。
     who = (persona if persona is not None else runtime().persona).promise_subject
-    subject = str(fact.get("subject") or (who if kind == "promise" else "他")).strip()[:40]
-    if kind == "promise":
-        subject = who
+    subject = str(fact.get("subject") or "").strip()
+    # 承诺一律算她说的；其余只有模型标了「她」才算她自己的事（铁律 1 / 6）。
+    subject = who if kind == "promise" or subject == "她" else "他"
     predicate = str(fact.get("predicate") or "").strip()[:80]
     obj = str(fact.get("object") or "").strip()[:200]
     # **object 允许为空。** 中文里「怕黑」「我妈身体不好」这类事实根本没有宾语，

@@ -56,7 +56,7 @@ for fact in mem.recall("我家猫叫什么？"):
 | 层 | 存什么 | 落在哪 | 性质 |
 |---|---|---|---|
 | **L0 原话** | 一句一句的原文 | `sessions/YYYY-MM-DD.md` | 只追加；超期只**归档**（gzip），一个字节都不删 |
-| **L1 事实** | 结构化的事实、承诺 | `log.jsonl` → `index.sqlite` | 日志不可再生，索引可重建 |
+| **L1 事实** | 结构化的事实（他的、她自己的）与承诺 | `log.jsonl` → `index.sqlite` | 日志不可再生，索引可重建 |
 | **L2 纪要** | 一段对话之后的小结 | `summaries` | 有预算的散文，可裁剪 |
 | **L3 画像** | 事实上的权重 | `persona_attention` | 由注入的 `PersonaProfile` 决定 |
 

@@ -156,7 +156,9 @@ class MemoryConfig:
     max_turns: int = 200
     extract_max_calls: int = 8
     extract_model: str = ""
-    extract_tokens_per_turn: int = 160
+    # 折算一次整理要读多少 token 的输入。200 而不是更小：一批里也夹着她的行，
+    # 每条都可能多吐一条 subject=她 的事实，输出比只抽他的时候长。
+    extract_tokens_per_turn: int = 200
     extract_max_tokens: int = 8000
     consolidate_days: int = 90
     decay_floor: float = 0.05
@@ -224,7 +226,7 @@ class MemoryConfig:
                 max_turns=_env_int("MAX_TURNS", 200),
                 extract_max_calls=_env_int("EXTRACT_MAX_CALLS", 8),
                 extract_model=_env_str("EXTRACT_MODEL", ""),
-                extract_tokens_per_turn=_env_int("EXTRACT_TOKENS_PER_TURN", 160),
+                extract_tokens_per_turn=_env_int("EXTRACT_TOKENS_PER_TURN", 200),
                 extract_max_tokens=_env_int("EXTRACT_MAX_TOKENS", 8000),
                 consolidate_days=_env_int("CONSOLIDATE_DAYS", 90),
                 decay_floor=_env_float("DECAY_FLOOR", 0.05),

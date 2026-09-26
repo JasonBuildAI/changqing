@@ -1,5 +1,5 @@
 {
- "_note": "从本库被抽出之前的那份参考实现跑出来的固定输出，供 tests/test_goldens.py 比对。字段名 her_attention 在冻结时改成了 persona_attention（本库的有意改名）。",
+ "_note": "从本库被抽出之前的那份参考实现跑出来的固定输出，供 tests/test_goldens.py 比对。字段名 her_attention 在冻结时改成了 persona_attention（本库的有意改名）。2026-09-23 那轮同步把闸 3 放宽到 subject=她（她自己的事也进事实层）：这一处**有意**的行为分叉不在本文件的值里 —— 第 4 条候选的 quote 落在被回引的那一轮之外，判决本来就是 drop，新语义另有 tests/test_extract.py 钉住。",
  "expected": {
   "absolutize": [
    "我家猫叫团子，三岁了",

@@ -62,7 +62,7 @@ for fact in mem.recall("what is my cat called?"):
 | Layer | Holds | Lives in | Nature |
 |---|---|---|---|
 | **L0 utterances** | the raw dialogue, turn by turn | `sessions/YYYY-MM-DD.md` | append-only; expired months are **archived** (gzip), never deleted |
-| **L1 facts** | structured facts and promises | `log.jsonl` → `index.sqlite` | the log is irreplaceable, the index is rebuildable |
+| **L1 facts** | structured facts (his and her own) and promises | `log.jsonl` → `index.sqlite` | the log is irreplaceable, the index is rebuildable |
 | **L2 summaries** | a short recap per conversation | `summaries` | prose with a budget, clip-able |
 | **L3 persona** | weights on top of facts | `persona_attention` | decided by the injected `PersonaProfile` |
 

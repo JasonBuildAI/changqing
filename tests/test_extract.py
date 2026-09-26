@@ -58,9 +58,17 @@ def test_prompt_marks_who_said_what():
 
 
 def test_prompt_still_mentions_the_invariants():
-    """改 prompt 的人最容易顺手删掉这两句，而它们各自挡一类错。"""
+    """改 prompt 的人最容易顺手删掉这几样，而它们各自挡一类错。"""
     assert "宁少勿错" in EXTRACT_SYSTEM
-    assert "铁律 2" in EXTRACT_SYSTEM
+    assert "她答应的事" in EXTRACT_SYSTEM, "承诺类事实不能从口径里消失"
+    assert "一字不改" in EXTRACT_SYSTEM, "quote 是回引的证据"
+
+
+def test_prompt_keeps_her_restating_rule():
+    """「她复述他的话不是新信息」只在 prompt 里 —— 一句话是她真说的还是她在
+    复述，文本上分不开，所以这条口径没有第二处落点可守。"""
+    assert "复述" in EXTRACT_SYSTEM
+    assert "她自己的" in EXTRACT_SYSTEM
 
 
 # ---------------------------------------------------------------- 解析
@@ -161,13 +169,33 @@ def test_verify_marks_a_paraphrase_pending_and_keeps_it():
     assert 0.0 < score < 1.0
 
 
-def test_verify_drops_her_words_except_her_promises():
-    """铁律 2：她的话只有「她答应的事」进库，其余一律不算他说过的事实。"""
+def test_verify_takes_her_own_things_but_not_her_restating_him():
+    """铁律 1 / 2：她的行只收**她自己的事** —— `kind=promise`（她答应的事）或
+    `subject=她`（她的偏好 / 习惯 / 正在做的事），其余一律不算他说过的事实。
+
+    放宽少了：她的承诺与偏好都进不了库，表现是「她忘了自己答应过什么」，
+    以及今天说爱喝美式、明天说从来不喝咖啡。放宽多了：她复述他的话会被当成
+    他提供的信息，再反过来变成「你上次说……」。
+    """
     turns = {"T-000002": _turn("T-000002", "assistant", "我周末带你去看展")}
     assert verify({"turn_ref": "T-000002", "quote": "我周末带你去看展"}, turns)[0] == "drop"
     assert verify(
         {"turn_ref": "T-000002", "quote": "我周末带你去看展", "kind": "promise"}, turns
-    ) == ("active", 1.0)
+    ) == ("active", 1.0), "她答应过的事要能落进事实层"
+    assert verify(
+        {"turn_ref": "T-000002", "quote": "我周末带你去看展", "subject": "她", "kind": "fact"},
+        turns,
+    ) == ("active", 1.0), "她自己的事（subject=她）不标 promise 一样要收"
+    assert (
+        verify({"turn_ref": "T-000002", "quote": "我周末带你去看展", "subject": "他"}, turns)[0]
+        == "drop"
+    ), "她复述他的话标成 subject=他，不许收"
+    assert (
+        verify({"turn_ref": "T-000002", "quote": "我周末带你去看展", "kind": "commitment"}, turns)[
+            0
+        ]
+        == "drop"
+    ), "「他答应的事」不能从她的行里抽"
 
 
 def test_verify_reads_the_tolerance_from_the_runtime(rt: Runtime):
@@ -223,8 +251,12 @@ def test_clean_fact_absolutizes_the_object_but_never_the_quote():
     assert out["quote"] == "我上周五去看了展"
 
 
-def test_clean_fact_takes_the_promise_subject_from_the_persona():
-    """承诺的归属文案是**形状**，不是自由内容：模型写成「他」也不许照抄。"""
+def test_clean_fact_takes_her_subject_from_the_persona():
+    """她那一侧（承诺与她自己的事）的归属文案是**形状**，不是自由内容。
+
+    模型把她的承诺写成「他」，她会拿自己的承诺说成「你上次说……」；把她的偏好
+    写成「我们」，卡片会读成「我们养的猫叫团子」—— 所以两种都要收口。
+    """
     out = clean_fact(
         {"subject": "他", "predicate": "带你去看展", "kind": "promise"},
         _turn(role="assistant"),
@@ -232,6 +264,22 @@ def test_clean_fact_takes_the_promise_subject_from_the_persona():
     )
     assert out is not None
     assert out["subject"] == "小满"
+
+    own = clean_fact(
+        {"subject": "她", "predicate": "平时都喝", "object": "美式"},
+        _turn(role="assistant"),
+        PersonaProfile(name="小满"),
+    )
+    assert own is not None
+    assert own["subject"] == "小满", "她自己的事跟承诺同一套归属"
+
+    third = clean_fact(
+        {"subject": "我们", "predicate": "养的猫叫", "object": "团子"},
+        _turn(),
+        PersonaProfile(name="小满"),
+    )
+    assert third is not None
+    assert third["subject"] == "他", "模型给的第三种写法一律收口到「他」"
 
 
 def test_clean_fact_normalizes_numbers_and_renames_the_weight_field():
