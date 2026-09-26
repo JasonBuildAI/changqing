@@ -292,6 +292,34 @@ def test_truncated_output_counts_as_failure_not_as_empty(rt: Runtime):
     assert "上限" in out["error"], "说清是哪一种失败：两者的修法不同"
 
 
+def test_empty_output_counts_as_failure_not_as_empty(rt: Runtime):
+    """空正文不是「没有可抽的」：契约要的是一份 JSON，空白永远不合格，按失败走。
+
+    2026-09-23 真机抓到一次「抽取 0 条、out 里没有 error、游标照常推进」——
+    根因是空响应与「没配模型」共用 `""` 这一个返回值，而上游把它读成合格的空答案。
+    重跑就绿，等于把丢事实推给运气。
+    """
+    say(UID, "我家猫叫团子")
+
+    class SilentLLM:
+        """一句话都不说的模型：不报错，也没有任何 JSON。"""
+
+        def __init__(self, body: str) -> None:
+            self.body = body
+
+        def __call__(self, messages, *, model="", max_tokens=0, on_usage=None, on_finish=None):
+            if on_finish:
+                on_finish("stop")
+            return self.body
+
+    for body in ("", "   \n"):
+        with with_llm(rt, SilentLLM(body)):
+            out = MemoryWorker().extract_uid(UID)
+        assert "游标不推进" in out.get("error", ""), f"空正文（{body!r}）要按失败走"
+        assert load_state(UID).get("extracted_rounds", 0) == 0, "游标不推进，下次重试"
+        assert list_facts(UID) == []
+
+
 def test_missing_llm_degrades_and_still_advances(rt: Runtime):
     """没注入模型是**降级**而不是失败：重试也不会变好，所以游标照常推进。
 
