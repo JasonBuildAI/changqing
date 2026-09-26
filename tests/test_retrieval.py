@@ -57,6 +57,26 @@ def test_the_gate_and_the_card_sections_read_one_list(rt: Runtime):
         assert has_recall_material(sess) is True, f"{key} 也算素材（与卡片同一份清单）"
 
 
+def test_her_own_things_are_a_section_of_her_own(rt: Runtime):
+    """她自己说的那一格（`her_self`）在清单里，而且归属留在**她**这一侧。
+
+    这一格是候选里唯一属于她的：模型这轮说出的「我上个月去了苏州」由宿主当轮
+    写进会话，下一轮起卡片上就有 —— 后台整理还没跑的那段时间差，正是她会
+    前后矛盾的地方。两件事一起钉住：**漏了它**，她刚说的那条下一轮就消失、
+    门控同时说「没料」；**归属写成「他说的」**（或并进他的候选分组），
+    人称整个反过来 —— 她会把自己说过的事当成他说的，下一轮敢说「你上次说
+    你去过苏州」。
+    """
+    rows = {key: (title, when) for key, title, when in MEMORY_SECTIONS}
+    assert rows.get("her_self") == ("你说过但还没核实", "她说的"), (
+        f"她自己那一格的形状变了：{rows.get('her_self')}"
+    )
+    assert len(rows) == len(MEMORY_SECTIONS), "同一格出现两次时，归属看的是最后一条"
+
+    sess = {"memory": {"her_self": ["我上个月去了苏州"]}}
+    assert has_recall_material(sess) is True, "她刚说过的自己的事也要算素材"
+
+
 def test_a_story_alone_counts_as_material(rt: Runtime):
     """纪要**不住在会话的字段清单里**，所以那份清单结构上覆盖不到它。
 
