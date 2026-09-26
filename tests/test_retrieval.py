@@ -75,10 +75,11 @@ def test_a_story_alone_counts_as_material(rt: Runtime):
 
 
 def test_the_opening_gate_asks_the_library_not_last_turns_worksheet(rt: Runtime):
-    """主动开口的闸跑在检索**之前**，那时工作面上还是上一轮的东西。
+    """两条开场探针都跑在检索**之前**，那时工作面上还是上一轮的东西。
 
     拿工作面当判据的结果是「她永远不开口」，而且看起来像功能坏了 ——
-    工作面不落盘，进程重启就是空的。
+    工作面不落盘，进程重启就是空的。窄的那条（有没有可用话题）是**宿主可选项**：
+    事实多、话题稀的号拿它当唯一的闸，等于把主动开口关掉。
     """
     assert has_any_material(UID) is False, "新用户：库里什么都没有"
     assert has_openable_topic(UID) is False

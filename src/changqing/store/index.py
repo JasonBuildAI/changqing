@@ -172,6 +172,11 @@ def _schema_ok(con: sqlite3.Connection) -> bool:
 
     所以判据是「版本号 + 关键表的关键列都在」。物化层是可重建的，
     这里判错的代价最多是重跑一次 `CREATE TABLE IF NOT EXISTS`，方向安全。
+
+    `topics` 表也一起查，理由同上：只查 facts / vectors 的话，老库会在这一步
+    返回 True，于是 `CREATE TABLE IF NOT EXISTS topics` 根本不跑，而读话题的那条
+    SELECT 会报「no such table: topics」—— 检索层把它吞成「这轮没有话题」，
+    于是话题一路静默缺席，不报错、不进任何指标。
     """
     try:
         if _meta_get(con, "schema_version", "") != str(SCHEMA_VERSION):
